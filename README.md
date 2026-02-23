@@ -38,7 +38,7 @@ Factorio 2.0 mod that introduces belt engines which consume energy to move conne
 
 ## Manual Installation
 
-1. Download zipped mod from Release section
+1. Download mod zip-file from [releases](https://github.com/Oxion/disastercore-belts/releases) section
 2. Place zip-file to your Factorio mods directory:
    - Windows: `%APPDATA%\Factorio\mods\`
    - Linux: `~/.factorio/mods/`
