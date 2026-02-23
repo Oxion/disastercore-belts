@@ -1549,6 +1549,12 @@ function DisasterCoreBelts.do_belt_engines_cycle_processing_tick()
   
   local processed_engines_count = 0
   while processed_engines_count < entities_per_tick do
+    --- TODO: improve fix, find reason why engine_processing_last_belt_key became invalid for belt_engine_cache
+    if DisasterCoreBelts.belt_engine_cache[engine_processing_last_belt_key] == nil then
+      engine_processing_last_belt_key = nil
+      engine_processing_last_belt_engine_key = nil
+    end
+
     local belt_unit_number, engines_cache = next(DisasterCoreBelts.belt_engine_cache, engine_processing_last_belt_key)
     if not belt_unit_number or not engines_cache then
       engine_processing_last_belt_key = nil

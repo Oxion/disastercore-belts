@@ -1,6 +1,6 @@
 {
   "name": "disastercore-belts",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "title": "Disaster Core Belts",
   "author": "Oxion",
   "description": "Introduces belt engines which consume energy to move connected belts",

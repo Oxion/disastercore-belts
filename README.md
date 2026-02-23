@@ -48,4 +48,4 @@ Factorio 2.0 mod that introduces belt engines which consume energy to move conne
 
 ## Version
 
-- Mod version: 1.0.1
+- Mod version: 1.0.2
