@@ -1,0 +1,10 @@
+{
+  "name": "disastercore-belts",
+  "version": "1.0.0",
+  "title": "Disaster Core Belts",
+  "author": "Oxion",
+  "description": "Introduces belt engines which consume energy to move connected belts",
+  "factorio_version": "2.0",
+  "dependencies": ["base >= 2.0.72", "? space-age >= 2.0.72"],
+  "license": "Custom - see LICENSE file. Personal use & modification allowed; permission required for use in other mods/compilations; attribution required."
+}
