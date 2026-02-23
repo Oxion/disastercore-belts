@@ -109,7 +109,7 @@ DataUtils.create_belt_engine{
   dummy_recipe_name = BELT_ENGINE_DUMMY_RECIPE_NAME,
   order = "f[" .. BeltEngine.belt_engines_names[3] .. "]",
   subgroup = "belt-accessories",
-  recipe_category = "crafting-with-fluid-or-metallurgy",
+  recipe_category = "crafting-with-fluid",
   recipe_ingredients = {
     {type = "item", name = "brushless-belt-engine", amount = 1},
     {type = "item", name = "advanced-circuit", amount = 4},
