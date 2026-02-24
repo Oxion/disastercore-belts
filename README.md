@@ -36,6 +36,22 @@ Factorio 2.0 mod that introduces belt engines which consume energy to move conne
 
 - Minor change in the starting technology tree: the logistics node now opens access to the first **Belt engine** (which depends on steam power and electronics), and the research unlock trigger was changed to crafting 10 transport belts
 
+## Mod integration into existing save
+
+**Important** Back up your save before loading it with this mod.
+- **First load** triggers a one-time migration (beltlike revaluation). This can take a while ... ~45s on a save with ~150k beltlike entities.  
+   **Recommended**: run the first load in singleplayer, save, then use that save for multiplayer.
+- **After migration,** all belts stop until you connect **belt engines** to their sections.
+
+**Optional — skip beltlike revaluation**
+
+Useful for large factories if you want to keep belts running and add **belt engines** and **section dividers** gradually instead of everything stopping at once.
+
+- Enable the startup setting `Initialization: Skip beltlike revaluation for existing save` (Mod settings → Startup).
+- To run revaluation later, the host can use the command `/disastercore-belts_force_revaluate`.
+
+
+
 ## Manual Installation
 
 1. Download mod zip-file from [releases](https://github.com/Oxion/disastercore-belts/releases) section
@@ -48,4 +64,4 @@ Factorio 2.0 mod that introduces belt engines which consume energy to move conne
 
 ## Version
 
-- Mod version: 1.0.2
+- Mod version: 1.0.3

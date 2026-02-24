@@ -1,3 +1,5 @@
+local mod_name = require("mod-name")
+local mod_settings_names_mapping = require("scripts.mod_settings").names_mapping
 local Directions = require("scripts.game.directions")
 local GameEventsUtils = require("scripts.game.game_events_utils")
 local BeltEngine = require("scripts.belt_engine")
@@ -31,6 +33,11 @@ local belt_engines_power_mapping = BeltEngine.belt_engines_power_mapping
 ---@field working boolean True if the engine is working, false otherwise
 ---@field engine LuaEntity Engine entity
 
+---@class RevaluateBeltlikesAction
+---@field tick number Tick number when action was added
+---@field player_index? number Optional player index in which context is being resolved
+---@field on_finished? fun(tick: number, player_index?: number) Callback to call when action is finished
+
 ---@class PendingBeltEngineBuiltAction
 ---@field tick number Tick number when action was added
 ---@field engine LuaEntity engine
@@ -46,6 +53,8 @@ local MAX_ENGINES_PROCESSING_CYCLE_TICKS = 7200
 local ENGINES_PROCESSING_ENTITIES_COUNT_SCALING_THRESHOLD = 5000
 
 local DisasterCoreBelts = {
+  ---@type RevaluateBeltlikesAction?
+  revaluate_beltlikes_action = nil,
   ---@type table<number, PendingBeltEngineBuiltAction>
   pending_belt_engine_built_actions = {},
   pending_beltlike_removal_process_action = nil,
@@ -1064,6 +1073,10 @@ end
 --- @param backward_jumps? table<number, LuaEntity> Optional map of unit_number -> entity for backward jumps (used for underground belts)
 --- @param forward_jumps? table<number, LuaEntity> Optional map of unit_number -> entity for forward jumps (used for underground belts)
 --- @param player_index? number Optional player index in which context is being resolved
+--- @return BeltSectionInfo section_info Section information
+--- @return boolean section_active True if section can be active, false otherwise
+--- @return number required_power Required power to activate section
+--- @return number combined_power Combined engine power
 function DisasterCoreBelts.resolve_and_update_beltlikes_section(start_beltlike, traverse_forward_only, traverse_backward_only, backward_jumps, forward_jumps, player_index)
   local section_info = DisasterCoreBelts.resolve_beltlike_section(start_beltlike, traverse_forward_only, traverse_backward_only, backward_jumps, forward_jumps)
   
@@ -1088,6 +1101,8 @@ function DisasterCoreBelts.resolve_and_update_beltlikes_section(start_beltlike, 
       player_index = player_index
     }
   end
+
+  return section_info, section_active, required_power, combined_power
 end
 
 -- Function to replace beltlikes (zero-speed <-> working)
@@ -2117,6 +2132,75 @@ function DisasterCoreBelts.restore_belt_engine_mappings()
   DisasterCoreBelts.mappings_restored = true
 end
 
+--- @param player_index? number Optional player index in which context is being resolved
+--- @param on_finished? fun(tick: number, player_index?: number) Callback to call when action is finished
+function DisasterCoreBelts.revaluate_beltlikes(player_index, on_finished)
+  if DisasterCoreBelts.revaluate_beltlikes_action then
+    return
+  end
+
+  game.print("[DisasterCoreBelts] Revaluating beltlikes states, this may take a while...")
+
+  DisasterCoreBelts.revaluate_beltlikes_action = {
+    tick = game.tick,
+    player_index = player_index,
+    on_finished = on_finished,
+  }
+end
+
+--- @param tick number tick number
+function DisasterCoreBelts.do_revaluate_beltlikes_action_processing(tick)
+  if not DisasterCoreBelts.revaluate_beltlikes_action or DisasterCoreBelts.revaluate_beltlikes_action.tick + 5 > tick then
+    return
+  end
+
+  local player_index = DisasterCoreBelts.revaluate_beltlikes_action.player_index
+  local on_finished = DisasterCoreBelts.revaluate_beltlikes_action.on_finished
+
+  --- @type table<number, boolean>
+  local processes_beltlikes_set = {}
+
+  local total_surface_count = 0
+  local total_beltlikes_sections_count = 0
+  for _, surface in pairs(game.surfaces) do
+    if surface.valid then
+      total_surface_count = total_surface_count + 1
+
+      local beltlikes = surface.find_entities_filtered{type = beltlikes_types}
+      local beltlikes_count = #beltlikes
+      game.print("[DisasterCoreBelts] Found " .. beltlikes_count .. " beltlikes on surface " .. surface.name)
+
+      local surface_processed_beltlikes_count = 0
+      for _, surface_beltlike in ipairs(beltlikes) do
+        if surface_beltlike.valid and surface_beltlike.unit_number then
+          if not processes_beltlikes_set[surface_beltlike.unit_number] then
+            local section_info = DisasterCoreBelts.resolve_and_update_beltlikes_section(surface_beltlike, nil, nil, nil, nil, player_index)
+            total_beltlikes_sections_count = total_beltlikes_sections_count + 1
+  
+            for _, section_beltlike in ipairs(section_info.belts) do
+              surface_processed_beltlikes_count = surface_processed_beltlikes_count + 1
+  
+              if section_beltlike.valid and section_beltlike.unit_number then
+                processes_beltlikes_set[section_beltlike.unit_number] = true
+              end
+            end
+          end
+        end
+      end
+
+      game.print("[DisasterCoreBelts] Processed " .. surface_processed_beltlikes_count .. " beltlikes on surface " .. surface.name)
+    end
+  end
+
+  game.print("[DisasterCoreBelts] Revaluating finished. Found " .. total_beltlikes_sections_count .. " beltlikes sections on " .. total_surface_count .. " surfaces")
+
+  if on_finished then
+    on_finished(tick, player_index)
+  end
+
+  DisasterCoreBelts.revaluate_beltlikes_action = nil
+end
+
 ------------------------------------------------------------
 --- DisasterCoreBelts_API
 ------------------------------------------------------------
@@ -2134,22 +2218,48 @@ end
 ------------------------------------------------------------
 
 function DisasterCoreBelts_API.on_init()
-  DisasterCoreBelts.replacing_belts = {}
-  DisasterCoreBelts.belt_engine_cache = {}
-  DisasterCoreBelts.engine_power_states = {}
   DisasterCoreBelts.mappings_restored = true
+
+  if game.tick > 100 then
+    -- mod added to played map after game was already started
+
+    if not settings.startup[mod_settings_names_mapping.skip_revaluate_beltlikes_into_existing_save].value then
+      game.print("[DisasterCoreBelts] Initializing mod into already started game... tick: " .. game.tick)
+      game.print("[DisasterCoreBelts] Please consider running initialization in singleplayer and then create new save for fast multiplayer loading")
+      DisasterCoreBelts.revaluate_beltlikes(nil)
+    end
+  else
+    game.print("[DisasterCoreBelts] New game detected, mod initialized successfully")
+  end
+  
+  storage.mod_version = script.active_mods[mod_name]
 end
 
 function DisasterCoreBelts_API.on_load()
-  DisasterCoreBelts.replacing_belts = {}
-  DisasterCoreBelts.belt_engine_cache = {}
-  DisasterCoreBelts.engine_power_states = {}
   DisasterCoreBelts.mappings_restored = false
+end
+
+--- @param data ConfigurationChangedData
+function DisasterCoreBelts_API.on_configuration_changed(data)
+  local this_mod_changes = data.mod_changes[mod_name]
+  if not this_mod_changes then
+    return
+  end
+
+  if not storage.mod_version then
+    --- setting inital version for save where mod is present but version is not set
+    storage.mod_version = this_mod_changes.old_version or this_mod_changes.new_version
+  end
+
+  --- Future migrations will be handled here
+
+  storage.mod_version = this_mod_changes.new_version
 end
 
 --- @param event EventData.on_tick
 function DisasterCoreBelts_API.on_tick(event)
   DisasterCoreBelts.restore_belt_engine_mappings()
+  DisasterCoreBelts.do_revaluate_beltlikes_action_processing(event.tick)
   DisasterCoreBelts.resolve_pending_belt_engine_built_actions(event.tick)
   DisasterCoreBelts.resolve_pending_beltlike_removal_process_action()
   DisasterCoreBelts.do_belt_engines_cycle_processing_tick()
@@ -2259,5 +2369,29 @@ function DisasterCoreBelts_API.on_entity_died(event)
     DisasterCoreBelts.handle_beltlike_removed(entity, GameEventsUtils.get_entity_died_event_cause_player_index(event))
   end
 end
+
+----------------------------------------------------------
+--- Commands
+----------------------------------------------------------
+
+commands.add_command(mod_name .. "_force_revaluate", "Ensures mod entities states consistency", function(data)
+  local player = game.players[data.player_index]
+  if not player or not player.valid or not player.admin then
+    player.print("[DisasterCoreBelts] You need to be admin to use this command")
+    return
+  end
+
+  DisasterCoreBelts.revaluate_beltlikes(data.player_index)
+end)
+
+commands.add_command(mod_name .. "_handled_mod_version", "Displays mod version that is currently in use", function(data)
+  local player = game.players[data.player_index]
+  if not player or not player.valid or not player.admin then
+    player.print("[DisasterCoreBelts] You need to be admin to use this command")
+    return
+  end
+  
+  player.print("[DisasterCoreBelts] Mod version: " .. storage.mod_version)
+end)
 
 return DisasterCoreBelts_API

@@ -42,6 +42,10 @@ script.on_load(function()
   DisasterCoreBelts.on_load()
 end)
 
+script.on_configuration_changed(function(data)
+  DisasterCoreBelts.on_configuration_changed(data)
+end)
+
 script.on_event(defines.events.on_tick, function(event)
   DisasterCoreBelts.on_tick(event)
 end)
