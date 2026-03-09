@@ -1,4 +1,24 @@
 ---------------------------------------------------------------------------------------------------
+Version: 1.1.0
+Date: 2026-03-09
+  Major Features:
+    - Variable speed of belt-like entities in a section depending on the ratio of engine power to the power required by the section; you can trade speed for section size.
+  Features:
+    - Belt-like entities with different speeds no longer have different names; a custom status is now applied that reflects their speed.
+    - Section divider recipe, item, and entity prototypes and their icons are auto-generated from their base belts.
+  Optimizations:
+    - Belt-engine state is re-evaluated faster when the player builds an electric pole in its range.
+    - Drastically improved performance of processing belt engine states by 5-6x.
+    - Improved performance of building, rotating, and removing belts and belt engines for large belt-like entity sections.
+  Bugfixes:
+    - Blueprint now correctly interacts with belts.
+    - Upgrade and deconstruction planners now correctly interact with belts.
+    - Upgrade planner can be applied to belt engines.
+    - Case where a T junction is formed at a turn belt or in similar cases and belt sections were not recalculating.
+    - Error when belt-like sections were not correctly re-evaluated when their configuration changed due to building, rotating, or removing adjacent belts.
+    - Error when belt-like sections were not correctly re-evaluated when underground belts were built.
+
+---------------------------------------------------------------------------------------------------
 Version: 1.0.3
 Date: 2026-02-24
   Changes:

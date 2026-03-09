@@ -34,6 +34,8 @@ Factorio 2.0 mod that introduces belt engines which consume energy to move conne
    <img src="assets/divider-place.webp" width="480" alt="divider-place">
 </div>
 
+- [Version 1.1.0] Variable speed of belt-like entities in a **belt-like entities section** depending on the ratio of engine power to the power required by the section; you can trade speed for section size.
+
 - Minor change in the starting technology tree: the logistics node now opens access to the first **Belt engine** (which depends on steam power and electronics), and the research unlock trigger was changed to crafting 10 transport belts
 
 ## Mod integration into existing save

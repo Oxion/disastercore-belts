@@ -206,6 +206,31 @@ local function try_to_align_frame_to_element(frame, anchor_element, gap)
   return true
 end
 
+local function index_of(table, value)
+  for i, v in pairs(table) do
+    if v == value then
+      return i
+    end
+  end
+  return nil
+end
+
+---@param inventory LuaInventory?
+---@param item_number number?
+---@return LuaItemStack?
+local function find_item_stack_by_item_number(inventory, item_number)
+  if not inventory or not inventory.valid then
+    return nil
+  end
+  for i = 1, #inventory do
+    local item_stack = inventory[i]
+    if item_stack and item_stack.valid and item_stack.valid_for_read and item_stack.item_number == item_number then
+      return item_stack
+    end
+  end
+  return nil
+end
+
 return {
   manhattan_distance = manhattan_distance,
   parse_short_number = parse_short_number,
@@ -215,4 +240,6 @@ return {
   get_offset_from_root = get_offset_from_root,
   get_screen_root_for_element = get_screen_root_for_element,
   try_to_align_frame_to_element = try_to_align_frame_to_element,
+  index_of = index_of,
+  find_item_stack_by_item_number = find_item_stack_by_item_number,
 }

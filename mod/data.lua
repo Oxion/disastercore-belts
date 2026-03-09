@@ -1,7 +1,6 @@
 local ModName = require("mod-name")
 local DataUtils = require("scripts.data_utils")
 local BeltEngine = require("scripts.belt_engine")
-local Beltlike = require("scripts.beltlike")
 
 ------------------------------------------------------------
 --- Item subgroups
@@ -27,42 +26,15 @@ DataUtils.extend_beltlikes()
 --- Section-dividers belts
 ------------------------------------------------------------
 
-DataUtils.create_section_divider_belt{
-  base_name = "transport-belt",
-  divider_name = Beltlike.beltlike_section_dividers_names[1],
-  upgrade_entity_name = Beltlike.beltlike_section_dividers_names[2],
-  order_prefix = "g",
+DataUtils.create_section_divider_belts{
   subgroup = "belt-accessories",
 }
-DataUtils.create_section_divider_belt{
-  base_name = "fast-transport-belt",
-  divider_name = Beltlike.beltlike_section_dividers_names[2],
-  upgrade_entity_name = Beltlike.beltlike_section_dividers_names[3],
-  order_prefix = "h",
-  subgroup = "belt-accessories",
-}
-DataUtils.create_section_divider_belt{
-  base_name = "express-transport-belt",
-  divider_name = Beltlike.beltlike_section_dividers_names[3],
-  upgrade_entity_name = data.raw["transport-belt"]["turbo-transport-belt"] and Beltlike.beltlike_section_dividers_names[4] or nil,
-  order_prefix = "i",
-  subgroup = "belt-accessories",
-}
--- Add turbo section divider belts if they exist
-if data.raw["transport-belt"]["turbo-transport-belt"] then
-  DataUtils.create_section_divider_belt{
-    base_name = "turbo-transport-belt",
-    divider_name = Beltlike.beltlike_section_dividers_names[4],
-    order_prefix = "j",
-    subgroup = "belt-accessories",
-  }
-end
 
 ------------------------------------------------------------
---- Zero-speed beltlikes
+--- Reduced-speed beltlikes
 ------------------------------------------------------------
 
-DataUtils.create_zero_speed_beltlikes()
+DataUtils.create_reduced_speed_beltlikes()
 
 ------------------------------------------------------------
 --- Belt engines
@@ -79,6 +51,7 @@ DataUtils.create_belt_engine_dummy_working_recipe(BELT_ENGINE_DUMMY_RECIPE_NAME,
 DataUtils.create_belt_engine{
   name = BeltEngine.belt_engines_names[1],
   dummy_recipe_name = BELT_ENGINE_DUMMY_RECIPE_NAME,
+  next_upgrade = BeltEngine.belt_engines_names[2],
   order = "d[" .. BeltEngine.belt_engines_names[1] .. "]",
   subgroup = "belt-accessories",
   recipe_category = "crafting",
@@ -93,6 +66,7 @@ DataUtils.create_belt_engine{
 DataUtils.create_belt_engine{
   name = BeltEngine.belt_engines_names[2],
   dummy_recipe_name = BELT_ENGINE_DUMMY_RECIPE_NAME,
+  next_upgrade = BeltEngine.belt_engines_names[3],
   order = "e[" .. BeltEngine.belt_engines_names[2] .. "]",
   subgroup = "belt-accessories",
   recipe_category = "crafting",
@@ -122,6 +96,8 @@ DataUtils.create_belt_engine{
 --- Technologies
 ------------------------------------------------------------
 
+DataUtils.integrate_section_divider_belts_to_technologies()
+
 local logistics_technology = data.raw["technology"]["logistics"]
 logistics_technology.prerequisites = { "steam-power", "electronics" }
 logistics_technology.research_trigger = {
@@ -129,14 +105,7 @@ logistics_technology.research_trigger = {
   item = "transport-belt",
   count = 10
 }
-table.insert(logistics_technology.effects, {
-  type = "unlock-recipe",
-  recipe = DataUtils.make_belt_to_section_divider_belt_recipe_name("transport-belt", Beltlike.beltlike_section_dividers_names[1])
-})
-table.insert(logistics_technology.effects, {
-  type = "unlock-recipe",
-  recipe = DataUtils.make_section_divider_belt_to_belt_recipe_name(Beltlike.beltlike_section_dividers_names[1], "transport-belt")
-})
+DataUtils.add_section_divider_belts_for_base_to_technology_effects(logistics_technology.effects, "transport-belt")
 table.insert(logistics_technology.effects, {
   type = "unlock-recipe",
   recipe = BeltEngine.belt_engines_names[1]
@@ -147,14 +116,6 @@ local logistics_2_technology = data.raw["technology"]["logistics-2"]
 table.insert(logistics_2_technology.prerequisites, "steel-processing")
 table.insert(logistics_2_technology.effects, {
   type = "unlock-recipe",
-  recipe = DataUtils.make_belt_to_section_divider_belt_recipe_name("fast-transport-belt", Beltlike.beltlike_section_dividers_names[2])
-})
-table.insert(logistics_2_technology.effects, {
-  type = "unlock-recipe",
-  recipe = DataUtils.make_section_divider_belt_to_belt_recipe_name(Beltlike.beltlike_section_dividers_names[2], "fast-transport-belt")
-})
-table.insert(logistics_2_technology.effects, {
-  type = "unlock-recipe",
   recipe = BeltEngine.belt_engines_names[2]
 })
 data:extend({ logistics_2_technology })
@@ -162,26 +123,6 @@ data:extend({ logistics_2_technology })
 local logistics_3_technology = data.raw["technology"]["logistics-3"]
 table.insert(logistics_3_technology.effects, {
   type = "unlock-recipe",
-  recipe = DataUtils.make_belt_to_section_divider_belt_recipe_name("express-transport-belt", Beltlike.beltlike_section_dividers_names[3])
-})
-table.insert(logistics_3_technology.effects, {
-  type = "unlock-recipe",
-  recipe = DataUtils.make_section_divider_belt_to_belt_recipe_name(Beltlike.beltlike_section_dividers_names[3], "express-transport-belt")
-})
-table.insert(logistics_3_technology.effects, {
-  type = "unlock-recipe",
   recipe = BeltEngine.belt_engines_names[3]
 })
 data:extend({ logistics_3_technology })
-
-local turbo_transport_belt_technology = data.raw["technology"]["turbo-transport-belt"]
-if turbo_transport_belt_technology then
-  table.insert(turbo_transport_belt_technology.effects, {
-    type = "unlock-recipe",
-    recipe = DataUtils.make_belt_to_section_divider_belt_recipe_name("turbo-transport-belt", Beltlike.beltlike_section_dividers_names[4])
-  })
-  table.insert(turbo_transport_belt_technology.effects, {
-    type = "unlock-recipe",
-    recipe = DataUtils.make_section_divider_belt_to_belt_recipe_name(Beltlike.beltlike_section_dividers_names[4], "turbo-transport-belt")
-  })
-end

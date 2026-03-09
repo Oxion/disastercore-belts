@@ -2,7 +2,81 @@ local ModName = require("mod-name")
 local BeltEngine = require("scripts.belt_engine")
 local Beltlike = require("scripts.beltlike")
 
-local DataUtils = {}
+local DataUtils = {
+  ---@type table<string, table<string, string>>
+  upgrades_mapping_by_types = {},
+}
+
+---@param type_name string
+function DataUtils.init_upgrades_mapping(type_name)
+  local upgrades_mapping = {}
+  local base_type_entity_prototypes = data.raw[type_name]
+  for base_name, base_entity_prototype in pairs(base_type_entity_prototypes) do
+    local next_upgrade_name = base_entity_prototype.next_upgrade
+    if upgrades_mapping then
+      upgrades_mapping[base_name] = next_upgrade_name
+    end
+  end
+
+  DataUtils.upgrades_mapping_by_types[type_name] = upgrades_mapping
+end
+
+---@param icons data.IconData[]?
+---@param builtint_icon data.IconData?
+---@return data.IconData[]
+function DataUtils.deepcopy_normalize_to_icons(icons, builtint_icon)
+  if icons then
+    return table.deepcopy(icons)
+  end
+
+  local new_icons = {}
+  if builtint_icon then
+    table.insert(new_icons, table.deepcopy(builtint_icon))
+  end
+  return new_icons
+end
+
+---@param entity_prototype data.EntityPrototype
+function DataUtils.get_entity_prototype_order(entity_prototype)
+  local entity_prototype_order = entity_prototype.order
+  if entity_prototype_order and entity_prototype_order ~= "" then
+    return entity_prototype_order
+  end
+  
+  local base_item = data.raw["item"][entity_prototype.name]
+  if base_item and base_item.order and base_item.order ~= "" then
+    return "z-" .. base_item.order
+  end
+
+  return nil
+end
+
+---@param prototype_order string
+---@return string[]
+function DataUtils.get_prototype_order_ordering_sequences(prototype_order)
+  local ordering_sequences = {}
+  ---@type number | nil
+  local start_index = 1
+  local entity_prototype_order_length = #prototype_order
+  while start_index <= entity_prototype_order_length and start_index do
+    local end_index = string.find(prototype_order, "[", start_index, true)
+    if not end_index then
+      break
+    end
+    
+    local ordering_sequence = string.sub(prototype_order, start_index, end_index - 1)
+    table.insert(ordering_sequences, ordering_sequence)
+    
+    start_index = string.find(prototype_order, "]", end_index + 1, true)
+    if not start_index then
+      break
+    end
+
+    start_index = start_index + 2
+  end
+
+  return ordering_sequences
+end
 
 function DataUtils.extend_beltlikes()
   for _, base_type in ipairs(Beltlike.beltlikes_types) do
@@ -21,6 +95,10 @@ function DataUtils.extend_beltlikes()
   end
 end
 
+function DataUtils.make_section_divider_name(base_name)
+  return Beltlike.belt_section_divider_prefix .. "-" .. base_name
+end
+
 function DataUtils.make_belt_to_section_divider_belt_recipe_name(belt_name, divider_name)
   return "convert-" .. belt_name .. "-to-" .. divider_name
 end
@@ -31,79 +109,232 @@ end
 
 ---@class CreateSectionDividerBeltProps
 ---@field base_name string
----@field divider_name string
----@field upgrade_entity_name string | nil
----@field order_prefix string
 ---@field subgroup string
 
+---@class CreateSectionDividerBeltsResult
+---@field divider_belt_item data.ItemPrototype
+---@field divider_belt_entity data.TransportBeltPrototype
+---@field convert_to_divider_recipe data.RecipePrototype
+---@field convert_from_divider_recipe data.RecipePrototype
+
 ---@param props CreateSectionDividerBeltProps
+---@return CreateSectionDividerBeltsResult?
 function DataUtils.create_section_divider_belt(props)
   local base_belt_entity_prototype = data.raw["transport-belt"][props.base_name]
   if not base_belt_entity_prototype then
-    return
+    return nil
   end
 
   -- Get base belt item for icon and other properties
   local base_belt_item = data.raw["item"][props.base_name]
   if not base_belt_item then
-    return
+    return nil
   end
 
-  local animation_set_filename = "__" .. ModName .. "__/graphics/entity/" .. props.divider_name .. "/spritesheet.png"
-  local icon_filename = "__" .. ModName .. "__/graphics/icons/" .. props.divider_name .. ".png"
+  local divider_name = DataUtils.make_section_divider_name(props.base_name)
+
+  local animation_set_filename = "__" .. ModName .. "__/graphics/entity/" .. divider_name .. "/spritesheet.png"
+  local front_frame_icon_filename = "__" .. ModName .. "__/graphics/icons/section-divider-frame-front.png"
+  local back_frame_icon_filename = "__" .. ModName .. "__/graphics/icons/section-divider-frame-back.png"
+
+  local icons = DataUtils.deepcopy_normalize_to_icons(base_belt_item.icons, {
+    icon = base_belt_item.icon,
+    icon_size = 64,
+  })
+  table.insert(icons, 1, {
+    icon = back_frame_icon_filename,
+    icon_size = 64,
+    floating = true,
+  })
+  table.insert(icons, {
+    icon = front_frame_icon_filename,
+    icon_size = 64,
+    floating = true,
+  })
+
+  local base_ordering_sequences = DataUtils.get_prototype_order_ordering_sequences(base_belt_item.order)
+  local base_type_ordering_sequence = base_ordering_sequences[1] or "a"
+  local base_name_ordering_sequence = base_ordering_sequences[2] or "a"
 
   local divider_belt_item = table.deepcopy(base_belt_item)
-  divider_belt_item.name = props.divider_name
-  divider_belt_item.place_result = props.divider_name
-  divider_belt_item.localised_name = {"item-name." .. props.divider_name}
-  divider_belt_item.icon = icon_filename
-  divider_belt_item.icon_size = 64
-  data:extend({divider_belt_item})
+  divider_belt_item.name = divider_name
+  divider_belt_item.place_result = divider_name
+  divider_belt_item.localised_name = {
+    "?",
+    {"item-name." .. divider_name},
+    {"item-name.section-divider-default-template", {"entity-name." .. base_belt_item.name}},
+    {"entity-name." .. base_belt_item.name}
+  }
+  divider_belt_item.localised_description = {
+    "?",
+    {"item-description." .. divider_name},
+    {"item-description.section-divider-default-template", {"entity-description." .. base_belt_item.name}},
+    {"entity-description." .. base_belt_item.name}
+  }
+  divider_belt_item.icons = icons
+  divider_belt_item.subgroup = props.subgroup
+  divider_belt_item.order = base_type_ordering_sequence .. "[" .. base_belt_entity_prototype.type .. "]-" .. base_name_ordering_sequence .. "[" .. divider_name .. "]-section-divider"
 
   local divider_belt_entity_prototype = table.deepcopy(base_belt_entity_prototype)
-  divider_belt_entity_prototype.name = props.divider_name
-  divider_belt_entity_prototype.icon = icon_filename
+  divider_belt_entity_prototype.name = divider_name
+  divider_belt_entity_prototype.localised_name = {
+    "?",
+    {"entity-name." .. divider_name},
+    {"entity-name.section-divider-default-template", {"entity-name." .. base_belt_entity_prototype.name}},
+    {"entity-name." .. base_belt_entity_prototype.name}
+  }
+  divider_belt_entity_prototype.localised_description = {
+    "?",
+    {"entity-description." .. divider_name},
+    {"entity-description.section-divider-default-template", {"entity-description." .. base_belt_entity_prototype.name}},
+    {"entity-description." .. base_belt_entity_prototype.name}
+  }
+  divider_belt_entity_prototype.icons = icons
   divider_belt_entity_prototype.map_color = { r = 0.960, g = 0.400, b = 0.258 }
   divider_belt_entity_prototype.fast_replaceable_group = "transport-belt"
   divider_belt_entity_prototype.belt_animation_set.animation_set.filename = animation_set_filename
-  divider_belt_entity_prototype.next_upgrade = props.upgrade_entity_name
-  divider_belt_entity_prototype.minable = {mining_time = 0.2, result = props.divider_name}
-  data:extend({divider_belt_entity_prototype})
+  if divider_belt_entity_prototype.next_upgrade and divider_belt_entity_prototype.next_upgrade ~= "" then
+    divider_belt_entity_prototype.next_upgrade = DataUtils.make_section_divider_name(divider_belt_entity_prototype.next_upgrade)
+  end
+  divider_belt_entity_prototype.minable = {mining_time = 0.2, result = divider_name}
+  divider_belt_entity_prototype.order = "z-" .. divider_belt_item.order
 
   -- Convert regular belt to section divider recipe
+  local convert_to_divider_recipe_name = DataUtils.make_belt_to_section_divider_belt_recipe_name(props.base_name, divider_name)
   local convert_to_divider_recipe = {
     type = "recipe",
-    name = DataUtils.make_belt_to_section_divider_belt_recipe_name(props.base_name, props.divider_name),
-    icon = icon_filename,
-    icon_size = 64,
-    icon_mipmaps = 4,
+    name = convert_to_divider_recipe_name,
+    localised_name = {
+      "?",
+      {"recipe-name." .. convert_to_divider_recipe_name},
+      {"recipe-name.belt-to-section-divider-default-template", {"entity-name." .. base_belt_entity_prototype.name}},
+      convert_to_divider_recipe_name
+    },
+    localised_description = {
+      "?",
+      {"recipe-description." .. convert_to_divider_recipe_name},
+      {"recipe-description.belt-to-section-divider-default-template", {"entity-description." .. base_belt_entity_prototype.name}},
+      convert_to_divider_recipe_name
+    },
+    icons = icons,
     enabled = false,
     ingredients = {
       {type = "item", name = props.base_name, amount = 1}
     },
     results = {
-      {type = "item", name = props.divider_name, amount = 1}
+      {type = "item", name = divider_name, amount = 1}
     },
     subgroup = props.subgroup,
-    order = props.order_prefix .. "[" .. props.base_name .. "]-to-divider",
+    order = base_type_ordering_sequence .. "[section-divider]-" .. base_name_ordering_sequence .. "-a[" .. props.base_name .. "]-b[" .. divider_name .. "]",
   }
-  data:extend({convert_to_divider_recipe})
 
   -- Convert section divider back to regular belt recipe
+  local convert_from_divider_recipe_name = DataUtils.make_section_divider_belt_to_belt_recipe_name(divider_name, props.base_name)
   local convert_from_divider_recipe = {
     type = "recipe",
-    name = DataUtils.make_section_divider_belt_to_belt_recipe_name(props.divider_name, props.base_name),
+    name = convert_from_divider_recipe_name,
+    localised_name = {
+      "?",
+      {"recipe-name." .. convert_from_divider_recipe_name},
+      {"recipe-name.section-divider-to-belt-default-template", {"entity-name." .. base_belt_entity_prototype.name}},
+      convert_from_divider_recipe_name
+    },
+    localised_description = {
+      "?",
+      {"recipe-description." .. convert_from_divider_recipe_name},
+      {"recipe-description.section-divider-to-belt-default-template", {"entity-description." .. base_belt_entity_prototype.name}},
+      convert_from_divider_recipe_name
+    },
     enabled = false,
     ingredients = {
-      {type = "item", name = props.divider_name, amount = 1}
+      {type = "item", name = divider_name, amount = 1}
     },
     results = {
       {type = "item", name = props.base_name, amount = 1}
     },
     subgroup = props.subgroup,
-    order = props.order_prefix .. "[" .. props.base_name .. "]-from-divider"
+    order = base_type_ordering_sequence .. "[section-divider]-" .. base_name_ordering_sequence .. "b[" .. divider_name .. "]-a[" .. props.base_name .. "]",
   }
-  data:extend({convert_from_divider_recipe})
+
+  return {
+    divider_belt_item = divider_belt_item,
+    divider_belt_entity = divider_belt_entity_prototype,
+    convert_to_divider_recipe = convert_to_divider_recipe,
+    convert_from_divider_recipe = convert_from_divider_recipe,
+  }
+end
+
+---@class CreateSectionDividerBeltsProps
+---@field subgroup string
+
+---@param props CreateSectionDividerBeltsProps
+function DataUtils.create_section_divider_belts(props)
+  local new_prototypes = {}
+  
+  local base_type_entity_prototypes = data.raw["transport-belt"]
+  for base_name, _ in pairs(base_type_entity_prototypes) do
+    local result = DataUtils.create_section_divider_belt({
+      base_name = base_name,
+      subgroup = props.subgroup,
+    })
+    if result then
+      table.insert(new_prototypes, result.divider_belt_item)
+      table.insert(new_prototypes, result.divider_belt_entity)
+      table.insert(new_prototypes, result.convert_to_divider_recipe)
+      table.insert(new_prototypes, result.convert_from_divider_recipe)
+    end
+  end
+
+  data:extend(new_prototypes)
+end
+
+---@param effects any[]
+---@param base_name string
+function DataUtils.add_section_divider_belts_for_base_to_technology_effects(effects, base_name)
+  local divider_name = DataUtils.make_section_divider_name(base_name)
+  local convert_to_divider_recipe_name = DataUtils.make_belt_to_section_divider_belt_recipe_name(base_name, divider_name)
+  local convert_from_divider_recipe_name = DataUtils.make_section_divider_belt_to_belt_recipe_name(divider_name, base_name)
+  
+  table.insert(effects, {
+    type = "unlock-recipe",
+    recipe = convert_to_divider_recipe_name,
+  })
+  table.insert(effects, {
+    type = "unlock-recipe",
+    recipe = convert_from_divider_recipe_name,
+  })
+end
+
+function DataUtils.integrate_section_divider_belts_to_technologies()
+  local transport_belts = data.raw["transport-belt"]
+  ---@type table<string, data.TransportBeltPrototype>
+  local transport_belts_by_names = {}
+  for name, transport_belt in pairs(transport_belts) do
+    transport_belts_by_names[name] = transport_belt
+  end
+
+  for _, technology in pairs(data.raw["technology"]) do
+    if technology.effects then
+      local effects_added = false
+      local new_effects = {}
+      for _, effect in pairs(technology.effects) do
+        table.insert(new_effects, effect)
+
+        if effect.type == "unlock-recipe" and effect.recipe then
+          local transport_belt_prototype = transport_belts_by_names[effect.recipe]
+          if transport_belt_prototype then
+            DataUtils.add_section_divider_belts_for_base_to_technology_effects(new_effects, transport_belt_prototype.name)
+            effects_added = true
+          end
+        end
+      end
+
+      if effects_added then
+        technology.effects = new_effects
+        data:extend({ technology })
+      end
+    end
+  end
 end
 
 ---@class CreateZeroSpeedBeltlike
@@ -148,9 +379,64 @@ function DataUtils.create_zero_speed_beltlikes()
   end
 end
 
+function DataUtils.create_reduced_speed_beltlikes()
+  local prefix = Beltlike.reduced_speed_beltlike_prototype_prefix
+  local beltlikes_reduced_speeds_count = Beltlike.beltlikes_reduced_speeds_count
+
+  local reduced_speed_entities_prototypes = {}
+
+  for _, base_type in ipairs(Beltlike.beltlikes_types) do
+    local base_type_entity_prototypes = data.raw[base_type]
+    ---@cast base_type_entity_prototypes table<string, data.TransportBeltPrototype>
+    for base_name, base_entity_prototype in pairs(base_type_entity_prototypes) do
+      local base_item = data.raw["item"][base_name]
+
+      for i = 1, beltlikes_reduced_speeds_count do
+        local reduced_speed = Beltlike.get_reduced_speed(base_entity_prototype.speed, i)
+        local reduce_ratio = reduced_speed / base_entity_prototype.speed
+        local reduced_speed_entity_prototype_name = prefix .. "-" .. tostring(i) .. "-" .. base_name
+        
+        local reduced_speed_entity_prototype = table.deepcopy(base_entity_prototype)
+        reduced_speed_entity_prototype.name = reduced_speed_entity_prototype_name
+        reduced_speed_entity_prototype.localised_name = {"entity-name." .. base_name}
+        reduced_speed_entity_prototype.speed = reduced_speed + 0.00001
+        reduced_speed_entity_prototype.hidden_in_factoriopedia = true
+        reduced_speed_entity_prototype.placeable_by = { {item = base_name, count = 1} }
+
+        if base_item and base_item.icons or base_item.icon then
+          local icons = DataUtils.deepcopy_normalize_to_icons(base_item.icons, {
+            icon = base_item.icon,
+            icon_size = 64,
+          })
+          table.insert(icons, {
+            icon = "__" .. ModName .. "__/graphics/icons/speed-down.png",
+            icon_size = 32,
+            scale = 0.6,
+            shift = { 8, -8 },
+            floating = true,
+          })
+          reduced_speed_entity_prototype.icons = icons
+        end
+
+        if reduced_speed_entity_prototype.working_sound 
+          and reduced_speed_entity_prototype.working_sound.sound
+          and reduced_speed_entity_prototype.working_sound.sound.volume
+        then
+          reduced_speed_entity_prototype.working_sound.sound.volume = reduced_speed_entity_prototype.working_sound.sound.volume * reduce_ratio
+        end
+
+        table.insert(reduced_speed_entities_prototypes, reduced_speed_entity_prototype)
+      end
+    end
+  end
+
+  data:extend(reduced_speed_entities_prototypes)
+end
+
 ---@class CreateBeltEngineProps
 ---@field name string
 ---@field dummy_recipe_name string
+---@field next_upgrade string?
 ---@field order string
 ---@field subgroup string
 ---@field recipe_category string
@@ -241,7 +527,7 @@ function DataUtils.create_belt_engine(props)
   -- Minimally non-square collision_box keeps rotate-in-hand and direction in entity info
   engine.collision_box = {{-0.4, -0.41}, {0.4, 0.41}}   -- 0.8 x 0.82, almost square
   engine.selection_box = {{-0.5, -0.5}, {0.5, 0.5}}
-  engine.next_upgrade = nil
+  engine.next_upgrade = props.next_upgrade
   engine.show_recipe_icon = false  -- hide recipe icon in alt mode
   --- setup mirroring possibility
   engine.forced_symmetry = "horizontal"

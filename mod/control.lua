@@ -3,6 +3,7 @@
 local GameSprites = require("scripts.game.game_sprites")
 local BeltGUIManager = require("scripts.gui.belt_gui_manager")
 local BeltEngineGUIManager = require("scripts.gui.belt_engine_gui_manager")
+local Beltlike = require("scripts.beltlike")
 local DisasterCoreBelts = require("scripts.disaster_core_belts")
 
 DisasterCoreBelts.on_event("on_beltlikes_section_updated", function (event)
@@ -20,7 +21,13 @@ DisasterCoreBelts.on_event("on_beltlikes_section_updated", function (event)
     return
   end
 
-  local icon_text = "[img=" .. (event.section_active and GameSprites.status.working or GameSprites.status.not_working) .. "]"
+  local icon_name = GameSprites.status.yellow
+  if event.speed_index == 1 then
+    icon_name = GameSprites.status.not_working
+  elseif event.speed_index == Beltlike.beltlikes_speeds_count then
+    icon_name = GameSprites.status.working
+  end
+  local icon_text = "[img=" .. icon_name .. "]"
   local info_text = event.required_power ~= 0 and (string.format("%.0f", event.required_power) .. " | " .. string.format("%.0f", event.combined_power)) or tostring(event.section_info.effective_unit_count)
 
   player.create_local_flying_text{
@@ -35,10 +42,12 @@ DisasterCoreBelts.on_event("on_beltlikes_section_updated", function (event)
 end)
 
 script.on_init(function()
+  Beltlike.init_control_stage()
   DisasterCoreBelts.on_init()
 end)
 
 script.on_load(function()
+  Beltlike.init_control_stage()
   DisasterCoreBelts.on_load()
 end)
 
@@ -46,8 +55,9 @@ script.on_configuration_changed(function(data)
   DisasterCoreBelts.on_configuration_changed(data)
 end)
 
-script.on_event(defines.events.on_tick, function(event)
-  DisasterCoreBelts.on_tick(event)
+local DisasterCoreBelts_on_tick = DisasterCoreBelts.on_tick
+script.on_nth_tick(10, function(event)
+  DisasterCoreBelts_on_tick(event)
 end)
 
 script.on_nth_tick(30, function(event)
@@ -79,6 +89,18 @@ script.on_event(defines.events.on_player_flipped_entity, function(event)
   DisasterCoreBelts.on_player_flipped_entity(event)
 end)
 
+script.on_event(defines.events.on_player_setup_blueprint, function(event)
+  DisasterCoreBelts.on_player_setup_blueprint(event)
+end)
+
+script.on_event(defines.events.on_player_deconstructed_area, function(event)
+  DisasterCoreBelts.on_player_deconstructed_area(event)
+end)
+
+script.on_event(defines.events.on_cancelled_deconstruction, function(event)
+  DisasterCoreBelts.on_cancelled_deconstruction(event)
+end)
+
 script.on_event(defines.events.on_entity_died, function(event)
   DisasterCoreBelts.on_entity_died(event)
 end)
@@ -104,6 +126,7 @@ script.on_event(defines.events.on_gui_opened, function(event)
     return
   end
 end)
+
 script.on_event(defines.events.on_gui_closed, function(event)
   BeltEngineGUIManager.on_gui_closed(event)
   BeltGUIManager.on_gui_closed(event)

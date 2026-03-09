@@ -5,27 +5,27 @@ local GameEventsUtils = require("scripts.game.game_events_utils")
 local BeltEngine = require("scripts.belt_engine")
 local Beltlike = require("scripts.beltlike")
 local Utils = require("scripts.utils")
+local BeltlikesUtils = require("scripts.beltlikes_utils")
+
+local defines_entity_status_working = defines.entity_status.working
+local defines_entity_status_low_power = defines.entity_status.low_power
 
 local directions_vectors_map = Directions.vectors
 local opposite_directions_map = Directions.opposite_map
 local next_perpendicular_directions_map = Directions.next_perpendicular_map
 local prev_perpendicular_directions_map = Directions.prev_perpendicular_map
 
-local beltlikes_zero_speed_to_working_mapping = Beltlike.beltlikes_zero_speed_to_working_mapping
-local beltlikes_working_to_zero_speed_mapping = Beltlike.beltlikes_working_to_zero_speed_mapping
 local beltlikes_types_to_effective_units_mapping = Beltlike.beltlikes_types_to_effective_units_mapping
 
 local default_beltlike_drive_resistance = Beltlike.default_beltlike_drive_resistance
 local beltlikes_drive_resistance_mapping = Beltlike.beltlikes_drive_resistance_mapping
-
-local default_beltlike_tier = Beltlike.default_beltlike_tier
-local beltlikes_tier_mapping = Beltlike.beltlikes_tier_mapping
 
 local beltlike_section_dividers_names_set = Beltlike.beltlike_section_dividers_names_set
 
 local beltlikes_types = Beltlike.beltlikes_types
 local beltlikes_types_set = Beltlike.beltlikes_types_set
 
+local belt_engines_names = BeltEngine.belt_engines_names
 local default_engine_power = BeltEngine.default_engine_power
 local belt_engines_power_mapping = BeltEngine.belt_engines_power_mapping
 
@@ -43,28 +43,67 @@ local belt_engines_power_mapping = BeltEngine.belt_engines_power_mapping
 ---@field engine LuaEntity engine
 ---@field player_index? number Optional player index in which context is being resolved
 
-local PENDING_BELT_ENGINE_BUILT_ACTION_DELAY_TICKS = 10
+---@class PendingRevaluateBeltEngineAction
+---@field belt_engine_cache_record BeltEngineCacheRecord
+---@field player_index number
+
+---@class PendingBeltlikesSectionResolveAndUpdateAction
+---@field beltlike LuaEntity beltlike
+---@field traverse_forward_only? boolean
+---@field traverse_backward_only? boolean
+---@field backward_jumps? table<number, LuaEntity> Backward jumps table
+---@field forward_jumps? table<number, LuaEntity> Forward jumps table
+---@field player_index? number Optional player index in which context is being resolved
+
+local PENDING_BELTLIKE_BUILT_ACTIONS_RESOLVE_DEBOUNCE_TICKS = 12
+local MAX_DEBOUNCE_PENDING_BELTLIKE_BUILT_ACTIONS_COUNT = 50
+
+local PENDING_BELT_ENGINE_BUILT_ACTIONS_RESOLVE_DEBOUNCE_TICKS = 12
+local MAX_DEBOUNCE_PENDING_BELT_ENGINE_BUILT_ACTIONS_COUNT = 100
 
 -- Maximum length of belt line to traverse in one direction
 local MAX_BELT_LINE_LENGTH = 1000
+local MAX_BELTLIKES_SECTION_SIZE = 10000
 
-local MIN_ENGINES_PROCESSING_CYCLE_TICKS = 60
-local MAX_ENGINES_PROCESSING_CYCLE_TICKS = 7200
-local ENGINES_PROCESSING_ENTITIES_COUNT_SCALING_THRESHOLD = 5000
+-- Minimum of cycles count that can take engines processing window to handle all belt engines
+local ENGINES_PROCESSING_WINDOW_MIN_CYCLES_COUNT = 6
+-- Maximum of cycles count that can take engines processing window to handle all belt engines
+local ENGINES_PROCESSING_WINDOW_MAX_CYCLES_COUNT = 180
+-- Threshold of belt engines count to stop non linear scaling of the window cycles count
+local ENGINES_PROCESSING_WINDOW_ENTITIES_COUNT_SCALING_THRESHOLD = 5000
 
 local DisasterCoreBelts = {
+  last_active_deconstruction_operations_by_players = {},
+
   ---@type RevaluateBeltlikesAction?
   revaluate_beltlikes_action = nil,
+  
+  ---@type number
+  last_pending_belt_engine_built_action_tick = 0,
   ---@type table<number, PendingBeltEngineBuiltAction>
   pending_belt_engine_built_actions = {},
-  pending_beltlike_removal_process_action = nil,
+
+  ---@type table<number, PendingRevaluateBeltEngineAction>
+  pending_revaluate_belt_engines_actions = {},
+  
+  ---@type number
+  pending_beltlikes_sections_resolve_and_update_action_tick = 0,
+  ---@type number[]
+  pending_beltlikes_sections_resolve_and_update_actions_beltlikes_unit_numbers = {},
+  ---@type table<number, PendingBeltlikesSectionResolveAndUpdateAction>
+  pending_beltlikes_sections_resolve_and_update_actions = {},
+  
   replacing_belts = {},
   --- Cache of engines associated with each beltlike entity.
-  --- Maps beltlike unit_number -> engine unit_number -> BeltEngineCacheRecord.
-  --- @type table<number, table<number, BeltEngineCacheRecord>>
-  belt_engine_cache = {},
+  --- Maps beltlike unit_number -> engine unit_number -> engine unit_number.
+  --- @type table<number, table<number, number>>
+  beltlikes_engines_mapping_cache = {},
+  --- @type table<number, BeltEngineCacheRecord>
+  belt_engines_cache = {},
+  belt_engines_unit_numbers_cache = {},
   engine_power_states = {},
   belt_engines_count = 0,
+  engines_processing_window_engine_index = 1,
   engine_processing_last_belt_key = nil,
   engine_processing_last_belt_engine_key = nil,
   events_handlers = {
@@ -73,86 +112,102 @@ local DisasterCoreBelts = {
   }
 }
 
+--- Finds the section info by beltlike unit number.
+--- @param beltlikes_sections_infos BeltSectionInfo[] Array of section information
+--- @param beltlike_unit_number number Beltlike unit number
+--- @return BeltSectionInfo? Section information
+function DisasterCoreBelts.find_beltlike_section_info_by_beltlike_unit_number(beltlikes_sections_infos, beltlike_unit_number)
+  for _, section_info in ipairs(beltlikes_sections_infos) do
+    if section_info.beltlikes_unit_numbers_set[beltlike_unit_number] then
+      return section_info
+    end
+  end
+  return nil
+end
+
 --- Resolves pending belt engine built actions by processing them.
 --- @param tick number tick number
 --- @return nil
 function DisasterCoreBelts.resolve_pending_belt_engine_built_actions(tick)
-  for engine_unit_number, action in pairs(DisasterCoreBelts.pending_belt_engine_built_actions) do
-    if action.tick + PENDING_BELT_ENGINE_BUILT_ACTION_DELAY_TICKS <= tick then
-      local engine = action.engine
-      local player_index = action.player_index
-      
-      if engine.valid then
-        -- Find belt in engine direction
-        local beltlike = DisasterCoreBelts.find_beltlike_in_engine_direction(engine)
-        if beltlike and beltlike.valid and beltlike.unit_number then
-          -- Add engine to belt cache
-          DisasterCoreBelts.register_belt_engine(beltlike.unit_number, engine)
-
-          DisasterCoreBelts.configure_belt_engine_for_beltlike(engine, beltlike)
-
-          DisasterCoreBelts.resolve_and_update_beltlikes_section(beltlike, nil, nil, nil, nil, player_index)
-        end
-      end
-
-      DisasterCoreBelts.pending_belt_engine_built_actions[engine_unit_number] = nil
-    end
-  end
-end
-
---- Processes pending beltlike removal action by resolving all connected beltlike sections and updating their states.
---- For each connected beltlike, resolves its beltlike section, checks if it can be active (has enough engine power),
---- and activates or deactivates beltlike sections accordingly.
---- Clears the pending action after processing.
---- @return nil
-function DisasterCoreBelts.resolve_pending_beltlike_removal_process_action()
-  if not DisasterCoreBelts.pending_beltlike_removal_process_action then
+  if #DisasterCoreBelts.pending_belt_engine_built_actions <= MAX_DEBOUNCE_PENDING_BELT_ENGINE_BUILT_ACTIONS_COUNT
+    and DisasterCoreBelts.last_pending_belt_engine_built_action_tick + PENDING_BELT_ENGINE_BUILT_ACTIONS_RESOLVE_DEBOUNCE_TICKS > tick
+  then
     return
   end
-  
-  local connected_belts = DisasterCoreBelts.pending_beltlike_removal_process_action.connected_belts
-  local player_index = DisasterCoreBelts.pending_beltlike_removal_process_action.player_index
 
-  -- For each connected belt in line, resolve its line and update states
-  for _, belt_data in ipairs(connected_belts) do
-    local nearby_belt = belt_data.belt
-    if nearby_belt.valid then
-      DisasterCoreBelts.resolve_and_update_beltlikes_section(
-        nearby_belt,
-        belt_data.traverse_forward_only,
-        belt_data.traverse_backward_only,
-        belt_data.backward_jumps,
-        belt_data.forward_jumps,
-        player_index
-      )
+  --- First we registering all belt engines
+  for engine_unit_number, action in pairs(DisasterCoreBelts.pending_belt_engine_built_actions) do
+    local engine = action.engine
+    local player_index = action.player_index
+    
+    if engine.valid then
+      -- Find belt in engine direction
+      local beltlike = DisasterCoreBelts.find_beltlike_in_engine_direction(engine)
+      if beltlike and beltlike.valid and beltlike.unit_number then
+        -- Add engine to belt cache
+        DisasterCoreBelts.register_belt_engine(beltlike.unit_number, engine)
+
+        DisasterCoreBelts.configure_belt_engine_for_beltlike(engine, beltlike)
+
+        --- Add action to resolve beltlike section
+        table.insert(DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions_beltlikes_unit_numbers, beltlike.unit_number)
+        DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions[beltlike.unit_number] = {
+          beltlike = beltlike,
+          player_index = player_index,
+        }
+      end
+    end
+
+    DisasterCoreBelts.pending_belt_engine_built_actions[engine_unit_number] = nil
+  end
+end
+
+function DisasterCoreBelts.resolve_pending_revaluate_belt_engines_actions()
+  for _, action in pairs(DisasterCoreBelts.pending_revaluate_belt_engines_actions) do
+    DisasterCoreBelts.revaluate_belt_engine(action.belt_engine_cache_record, action.player_index)
+  end
+
+  DisasterCoreBelts.pending_revaluate_belt_engines_actions = {}
+end
+
+--- Resolves pending beltlikes sections resolve and update actions by processing them.
+--- @param tick number tick number
+--- @return nil
+function DisasterCoreBelts.resolve_pending_beltlikes_sections_resolve_and_update_actions(tick)
+  local pending_beltlikes_sections_resolve_and_update_actions_beltlikes_unit_numbers = DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions_beltlikes_unit_numbers
+  local pending_beltlikes_sections_resolve_and_update_actions = DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions
+  local pending_beltlikes_sections_resolve_and_update_actions_count = #pending_beltlikes_sections_resolve_and_update_actions_beltlikes_unit_numbers
+
+  if pending_beltlikes_sections_resolve_and_update_actions_count <= MAX_DEBOUNCE_PENDING_BELTLIKE_BUILT_ACTIONS_COUNT
+    and DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_action_tick + PENDING_BELTLIKE_BUILT_ACTIONS_RESOLVE_DEBOUNCE_TICKS > tick
+  then
+    return
+  end
+
+  local resolved_beltlike_sections_infos = {}
+  for i = pending_beltlikes_sections_resolve_and_update_actions_count, 1, -1 do
+    local action = pending_beltlikes_sections_resolve_and_update_actions[pending_beltlikes_sections_resolve_and_update_actions_beltlikes_unit_numbers[i]]
+    if action then
+      local beltlike = action.beltlike
+      if beltlike.valid and not beltlike.to_be_deconstructed() then
+        local section_info = DisasterCoreBelts.find_beltlike_section_info_by_beltlike_unit_number(resolved_beltlike_sections_infos, beltlike.unit_number)
+        if not section_info then
+          section_info = DisasterCoreBelts.resolve_and_update_beltlikes_section(
+            beltlike,
+            action.traverse_forward_only,
+            action.traverse_backward_only,
+            action.backward_jumps,
+            action.forward_jumps,
+            action.player_index
+          )
+          table.insert(resolved_beltlike_sections_infos, section_info)
+        end
+      end
     end
   end
 
-  DisasterCoreBelts.pending_beltlike_removal_process_action = nil
-end
-
--- Cancel pending beltlike removal process action
-function DisasterCoreBelts.cancel_pending_beltlike_removal_process_action()
-  DisasterCoreBelts.pending_beltlike_removal_process_action = nil
-end
-
---- Gets the tier (evolution level) of a beltlike entity by its name.
---- Returns "basic", "fast", "express", or "turbo" depending on the beltlike type.
---- Uses dictionary lookup for O(1) performance.
---- @param beltlike_name string? Name of the beltlike entity
---- @return string Tier name ("basic", "fast", "express", or "turbo"), defaults to "basic" if beltlike_name is nil or not found
-function DisasterCoreBelts.get_beltlike_tier(beltlike_name)
-  if not beltlike_name then return default_beltlike_tier end
-  return beltlikes_tier_mapping[beltlike_name] or default_beltlike_tier
-end
-
---- Checks if a beltlike entity matches the specified tier.
---- @param beltlike_name string? Name of the beltlike entity
---- @param tier string? Tier to compare against ("basic", "fast", "express", or "turbo")
---- @return boolean True if beltlike tier matches the specified tier, false otherwise (also returns false if either parameter is nil)
-function DisasterCoreBelts.is_same_tier_beltlike(beltlike_name, tier)
-  if not beltlike_name or not tier then return false end
-  return DisasterCoreBelts.get_beltlike_tier(beltlike_name) == tier
+  DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions_beltlikes_unit_numbers = {}
+  DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions = {}
 end
 
 -- Helper function to check if entity is a belt engine
@@ -166,253 +221,26 @@ function DisasterCoreBelts.is_belt_engine(entity)
   return BeltEngine.belt_engines_names_set[entity.name] == true
 end
 
---- Checks if an input neighbour beltlike entity is in the same line as the current beltlike.
---- A neighbour is considered in line if it's valid, has the same tier, and either:
---- - The beltlike has only one input (always in line), or
---- - The neighbour's direction matches the beltlike's direction.
---- @param beltlike_direction defines.direction Direction of the current beltlike entity
---- @param beltlike_tier string Tier of the current beltlike ("basic", "fast", "express", or "turbo")
---- @param beltlike_inputs_count number Number of input neighbours the current beltlike has
---- @param input_neighbour_entity LuaEntity? Input neighbour entity to check
---- @return boolean True if input neighbour is in the same line, false otherwise
-function DisasterCoreBelts.is_beltlike_in_line_with_input_neighbour(beltlike_direction, beltlike_tier, beltlike_inputs_count, input_neighbour_entity)
-  if not input_neighbour_entity
-    or not input_neighbour_entity.valid
-    or not beltlikes_types_set[input_neighbour_entity.type]
-    or not DisasterCoreBelts.is_same_tier_beltlike(input_neighbour_entity.name, beltlike_tier)
-  then
-    return false
-  end
+--- @param belt_engine_cache_record BeltEngineCacheRecord
+--- @param player_index number? Player index in which context is being resolved
+--- @return nil
+function DisasterCoreBelts.revaluate_belt_engine(belt_engine_cache_record, player_index)
+  if belt_engine_cache_record.engine.valid then
+    local engine_working = DisasterCoreBelts.is_belt_engine_working(belt_engine_cache_record.engine)
+    if engine_working ~= belt_engine_cache_record.working then
+      belt_engine_cache_record.working = engine_working
 
-  return beltlike_inputs_count == 1 or input_neighbour_entity.direction == beltlike_direction
-end
-
---- Checks if an output neighbour beltlike entity is in the same line as the current beltlike.
---- For underground belts and splitters: checks if tier matches and direction matches.
---- For transport belts: checks if tier matches, and if the belt has multiple inputs, also checks if direction matches.
---- @param beltlike_direction defines.direction Direction of the current beltlike entity
---- @param beltlike_tier string Tier of the current beltlike ("basic", "fast", "express", or "turbo")
---- @param output_neighbour_entity LuaEntity? Output neighbour entity to check
---- @return boolean True if output neighbour is in the same line, false otherwise
-function DisasterCoreBelts.is_beltlike_in_line_with_output_neighbour(beltlike_direction, beltlike_tier, output_neighbour_entity)
-  if not output_neighbour_entity
-    or not output_neighbour_entity.valid
-  then
-    return false
-  end
-
-  if output_neighbour_entity.type == "underground-belt" or output_neighbour_entity.type == "splitter" then
-    return DisasterCoreBelts.is_same_tier_beltlike(output_neighbour_entity.name, beltlike_tier)
-      and output_neighbour_entity.direction == beltlike_direction
-  elseif output_neighbour_entity.type == "transport-belt" then
-    if not DisasterCoreBelts.is_same_tier_beltlike(output_neighbour_entity.name, beltlike_tier) then
-      return false
-    end
-
-    local output_neighbour_belt_neighbours = output_neighbour_entity.belt_neighbours
-    if not output_neighbour_belt_neighbours then
-      return true
-    end
-
-    local output_neighbour_belt_neighbours_inputs = output_neighbour_belt_neighbours.inputs
-    if not output_neighbour_belt_neighbours_inputs or #output_neighbour_belt_neighbours_inputs < 2 then
-      return true
-    end
-
-    return output_neighbour_entity.direction == beltlike_direction
-  end
-
-  return false
-end
-
---- Selects the first output neighbour beltlike entity that is in the same line from belt_neighbours.outputs.
---- Iterates through all output neighbours and returns the first one that matches the line criteria.
---- @param beltlike_direction defines.direction Direction of the current beltlike entity
---- @param beltlike_tier string Tier of the current beltlike ("basic", "fast", "express", or "turbo")
---- @param belt_neighbours {outputs?: LuaEntity[]}? Belt neighbours object containing outputs array
---- @return LuaEntity? First output neighbour in the same line, or nil if none found or belt_neighbours is invalid
-function DisasterCoreBelts.select_from_neighbours_output_neighbour_in_line(beltlike_direction, beltlike_tier, belt_neighbours)
-  if not belt_neighbours or not belt_neighbours.outputs then
-    return nil
-  end
-
-  for _, output_neighbour in ipairs(belt_neighbours.outputs) do
-    if DisasterCoreBelts.is_beltlike_in_line_with_output_neighbour(beltlike_direction, beltlike_tier, output_neighbour) then
-      return output_neighbour
-    end
-  end
-
-  return nil
-end
-
---- Selects the first input neighbour beltlike entity that is in the same line from belt_neighbours.inputs.
---- Iterates through all input neighbours and returns the first one that matches the line criteria.
---- @param beltlike_direction defines.direction Direction of the current beltlike entity
---- @param beltlike_tier string Tier of the current beltlike ("basic", "fast", "express", or "turbo")
---- @param belt_neighbours {inputs?: LuaEntity[]}? Belt neighbours object containing inputs array
---- @return LuaEntity? First input neighbour in the same line, or nil if none found or belt_neighbours is invalid
-function DisasterCoreBelts.select_from_neighbours_input_neighbour_in_line(beltlike_direction, beltlike_tier, belt_neighbours)
-  if not belt_neighbours or not belt_neighbours.inputs then
-    return nil
-  end
-
-  local inputs_count = #belt_neighbours.inputs
-  for _, input_neighbour in ipairs(belt_neighbours.inputs) do
-    if DisasterCoreBelts.is_beltlike_in_line_with_input_neighbour(beltlike_direction, beltlike_tier, inputs_count, input_neighbour) then
-      return input_neighbour
-    end
-  end
-
-  return nil
-end
-
---- Selects the output neighbour beltlike entity for a splitter that is in the same line, considering the splitter's line number (1 or 2).
---- Uses cross product to determine if the neighbour is on the correct side relative to the splitter's direction.
---- For line_number 1: selects neighbour on the left side (cross_product > 0) or in line (cross_product == 0).
---- For line_number 2: selects neighbour on the right side (cross_product < 0) or in line (cross_product == 0).
---- @param splitter_position MapPosition Position of the splitter entity
---- @param splitter_direction defines.direction Direction of the splitter entity
---- @param splitter_tier string Tier of the splitter ("basic", "fast", "express", or "turbo")
---- @param belt_neighbours {outputs?: LuaEntity[]}? Belt neighbours object containing outputs array
---- @param line_number number Line number (1 or 2) to select the appropriate output neighbour
---- @return LuaEntity? Output neighbour in the same line matching the line_number, or nil if none found or belt_neighbours is invalid
-function DisasterCoreBelts.splitter_select_from_neighbours_output_neighbour_in_line(splitter_position, splitter_direction, splitter_tier, belt_neighbours, line_number)
-  if not belt_neighbours or not belt_neighbours.outputs or #belt_neighbours.outputs < 1 then
-    return nil
-  end
-  
-  local dir_vec = directions_vectors_map[splitter_direction]
-  if not dir_vec then
-    return nil
-  end
-
-  for _, output_neighbour in ipairs(belt_neighbours.outputs) do
-    if output_neighbour.valid then
-      local relative_position = {
-        x = splitter_position.x - output_neighbour.position.x,
-        y = splitter_position.y - output_neighbour.position.y
-      }
-      local cross_product = dir_vec[1] * relative_position.y - dir_vec[2] * relative_position.x
-      if cross_product == 0 or (cross_product > 0 and line_number == 1) or (cross_product < 0 and line_number == 2) then
-        if DisasterCoreBelts.is_beltlike_in_line_with_output_neighbour(splitter_direction, splitter_tier, output_neighbour) then
-          return output_neighbour
-        else
-          return nil
-        end
+      local beltlike = DisasterCoreBelts.find_beltlike_in_engine_direction(belt_engine_cache_record.engine)
+      if beltlike and beltlike.valid then
+        DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_action_tick = game.ticks_played
+        table.insert(DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions_beltlikes_unit_numbers, beltlike.unit_number)
+        DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions[beltlike.unit_number] = {
+          beltlike = beltlike,
+          player_index = player_index,
+        }
       end
     end
   end
-
-  return nil
-end
-
---- Selects the input neighbour beltlike entity for a splitter that is in the same line, considering the splitter's line number (1 or 2).
---- Uses cross product with opposite direction to determine if the neighbour is on the correct side relative to the splitter's input direction.
---- For line_number 1: selects neighbour on the right side (cross_product < 0) or in line (cross_product == 0).
---- For line_number 2: selects neighbour on the left side (cross_product > 0) or in line (cross_product == 0).
---- @param splitter_position MapPosition Position of the splitter entity
---- @param splitter_direction defines.direction Direction of the splitter entity
---- @param splitter_tier string Tier of the splitter ("basic", "fast", "express", or "turbo")
---- @param belt_neighbours {inputs?: LuaEntity[]}? Belt neighbours object containing inputs array
---- @param line_number number Line number (1 or 2) to select the appropriate input neighbour
---- @return LuaEntity? Input neighbour in the same line matching the line_number, or nil if none found or belt_neighbours is invalid
-function DisasterCoreBelts.splitter_select_from_neighbours_input_neighbour_in_line(splitter_position, splitter_direction, splitter_tier, belt_neighbours, line_number)
-  if not belt_neighbours or not belt_neighbours.inputs or #belt_neighbours.inputs < 1 then
-    return nil
-  end
-  
-
-  local opposite_direction = opposite_directions_map[splitter_direction]
-  if not opposite_direction then
-    return nil
-  end
-
-  local dir_vec = directions_vectors_map[opposite_direction]
-  if not dir_vec then
-    return nil
-  end
-
-  local inputs_count = #belt_neighbours.inputs
-  for _, input_neighbour in ipairs(belt_neighbours.inputs) do
-    if input_neighbour.valid then
-      local relative_position = {
-        x = splitter_position.x - input_neighbour.position.x,
-        y = splitter_position.y - input_neighbour.position.y
-      }
-      local cross_product = dir_vec[1] * relative_position.y - dir_vec[2] * relative_position.x
-      if cross_product == 0 or (cross_product < 0 and line_number == 1) or (cross_product > 0 and line_number == 2) then
-        if DisasterCoreBelts.is_beltlike_in_line_with_input_neighbour(splitter_direction, splitter_tier, inputs_count, input_neighbour) then
-          return input_neighbour
-        else
-          return nil
-        end
-      end
-    end
-  end
-
-  return nil
-
-end
-
---- Identifies which line number (1 or 2) of a splitter a beltlike entity connects to when moving forward (output direction).
---- Uses cross product with opposite direction to determine if the splitter is to the left (line 1) or right (line 2) of the beltlike entity's direction.
---- @param belt_line_entity LuaEntity Beltlike entity (transport-belt, underground-belt, or splitter) that connects to the splitter
---- @param splitter_entity LuaEntity Splitter entity to identify the line number for
---- @param default_line_number number Default line number to return if calculation cannot be performed (usually 1)
---- @return number Line number (1 or 2) - 1 if splitter is to the right (cross_product < 0), 2 if to the left (cross_product > 0), or default_line_number if in line (cross_product == 0) or entities are invalid
-function DisasterCoreBelts.identify_beltlike_line_entity_output_splitter_line_number(belt_line_entity, splitter_entity, default_line_number)
-  if not belt_line_entity or not belt_line_entity.valid or not splitter_entity or not splitter_entity.valid then
-    return default_line_number
-  end
-
-  local opposite_direction = opposite_directions_map[splitter_entity.direction]
-  if not opposite_direction then
-    return default_line_number
-  end
-
-  local dir_vec = directions_vectors_map[opposite_direction]
-  if not dir_vec then
-    return default_line_number
-  end
-
-  local relative_position = {
-    x = splitter_entity.position.x - belt_line_entity.position.x,
-    y = splitter_entity.position.y - belt_line_entity.position.y
-  }
-  local cross_product = dir_vec[1] * relative_position.y - dir_vec[2] * relative_position.x
-  if cross_product == 0 then
-    return default_line_number
-  end
-
-  return cross_product < 0 and 1 or 2
-end
-
---- Identifies which line number (1 or 2) of a splitter a beltlike entity connects to when moving backward (input direction).
---- Uses cross product with splitter's direction to determine if the splitter is to the left (line 1) or right (line 2) of the beltlike entity's position.
---- @param belt_line_entity LuaEntity Beltlike entity (transport-belt, underground-belt, or splitter) that connects to the splitter
---- @param splitter_entity LuaEntity Splitter entity to identify the line number for
---- @param default_line_number number Default line number to return if calculation cannot be performed (usually 1)
---- @return number Line number (1 or 2) - 1 if splitter is to the left (cross_product > 0), 2 if to the right (cross_product < 0), or default_line_number if in line (cross_product == 0) or entities are invalid
-function DisasterCoreBelts.identify_beltlike_line_entity_input_splitter_line_number(belt_line_entity, splitter_entity, default_line_number)
-  if not belt_line_entity or not belt_line_entity.valid or not splitter_entity or not splitter_entity.valid then
-    return default_line_number
-  end
-
-  local dir_vec = directions_vectors_map[splitter_entity.direction]
-  if not dir_vec then
-    return default_line_number
-  end
-
-  local relative_position = {
-    x = splitter_entity.position.x - belt_line_entity.position.x,
-    y = splitter_entity.position.y - belt_line_entity.position.y
-  }
-  local cross_product = dir_vec[1] * relative_position.y - dir_vec[2] * relative_position.x
-  if cross_product == 0 then
-    return default_line_number
-  end
-
-  return cross_product > 0 and 1 or 2
 end
 
 ---@class BeltLineInfo
@@ -421,6 +249,7 @@ end
 ---@field engines BeltEngineCacheRecord[] Array of all engines connected to the line
 
 --- Resolves a belt line starting from a given belt and returns information about all connected belts and engines.
+--- @deprecated
 --- @param start_belt LuaEntity The starting belt entity (transport-belt, underground-belt, or splitter)
 --- @param traverse_forward_only? boolean If true, only traverse forward from start_belt (default: false, traverses both directions)
 --- @param traverse_backward_only? boolean If true, only traverse backward from start_belt (default: false, traverses both directions)
@@ -444,7 +273,7 @@ function DisasterCoreBelts.resolve_belt_line(
   end
   
   -- Get start belt tier
-  local start_tier = DisasterCoreBelts.get_beltlike_tier(start_belt.name)
+  local start_tier = BeltlikesUtils.get_beltlike_tier(start_belt.name)
   
   -- Now traverse the belt line both forward and backward from start_belt using only belt_neighbours
   -- Cannot use transport_line because 0-speed belts don't merge into transport_line
@@ -486,11 +315,12 @@ function DisasterCoreBelts.resolve_belt_line(
       end
       
       -- Get engines from cache (if no cache entry, no engines attached)
-      local cached_engines = DisasterCoreBelts.belt_engine_cache[unit_number]
-      if cached_engines then
-        for engine_unit_number, engine_entity in pairs(cached_engines) do
-          if engine_entity and engine_entity.valid then
-            table.insert(engines_list, engine_entity)
+      local beltlike_engines_unit_numbers = DisasterCoreBelts.beltlikes_engines_mapping_cache[unit_number]
+      if beltlike_engines_unit_numbers then
+        for _, engine_unit_number in pairs(beltlike_engines_unit_numbers) do
+          local belt_engine_cache_record = DisasterCoreBelts.belt_engines_cache[engine_unit_number]
+          if belt_engine_cache_record then
+            table.insert(engines_list, belt_engine_cache_record)
           end
         end
       end
@@ -523,11 +353,11 @@ function DisasterCoreBelts.resolve_belt_line(
           if current_belt.belt_to_ground_type == "input" then
             next_belt = current_belt.neighbours
           else
-            next_belt = DisasterCoreBelts.select_from_neighbours_output_neighbour_in_line(current_direction, start_tier, current_belt.belt_neighbours)
+            next_belt = BeltlikesUtils.select_from_neighbours_output_neighbour_in_line(current_direction, start_tier, current_belt.belt_neighbours)
           end
         else
           if current_belt.belt_to_ground_type == "input" then
-            next_belt = DisasterCoreBelts.select_from_neighbours_input_neighbour_in_line(current_direction, start_tier, current_belt.belt_neighbours)
+            next_belt = BeltlikesUtils.select_from_neighbours_input_neighbour_in_line(current_direction, start_tier, current_belt.belt_neighbours)
           else
             next_belt = current_belt.neighbours
           end
@@ -535,15 +365,15 @@ function DisasterCoreBelts.resolve_belt_line(
       elseif current_belt.type == "transport-belt" then
         if direction_forward then
           -- Forward: use outputs
-          next_belt = DisasterCoreBelts.select_from_neighbours_output_neighbour_in_line(current_direction, start_tier, current_belt.belt_neighbours)
+          next_belt = BeltlikesUtils.select_from_neighbours_output_neighbour_in_line(current_direction, start_tier, current_belt.belt_neighbours)
         else
           -- Backward: use inputs
-          next_belt = DisasterCoreBelts.select_from_neighbours_input_neighbour_in_line(current_direction, start_tier, current_belt.belt_neighbours)
+          next_belt = BeltlikesUtils.select_from_neighbours_input_neighbour_in_line(current_direction, start_tier, current_belt.belt_neighbours)
         end
       elseif current_belt.type == "splitter" then
         if direction_forward then
           -- we need to select correct output neighbour based on current line number, because splitters have 2 lines
-          next_belt = DisasterCoreBelts.splitter_select_from_neighbours_output_neighbour_in_line(
+          next_belt = BeltlikesUtils.splitter_select_from_neighbours_output_neighbour_in_line(
             current_belt.position, 
             current_direction, 
             start_tier, 
@@ -552,7 +382,7 @@ function DisasterCoreBelts.resolve_belt_line(
           )
         else
           -- we need to select correct input neighbour based on current line number, because splitters have 2 lines
-          next_belt = DisasterCoreBelts.splitter_select_from_neighbours_input_neighbour_in_line(
+          next_belt = BeltlikesUtils.splitter_select_from_neighbours_input_neighbour_in_line(
             current_belt.position,
             current_direction, 
             start_tier, 
@@ -580,9 +410,9 @@ function DisasterCoreBelts.resolve_belt_line(
 
       if next_belt.type == "splitter" then
         if direction_forward then
-          current_line_number = DisasterCoreBelts.identify_beltlike_line_entity_output_splitter_line_number(current_belt, next_belt, current_line_number)
+          current_line_number = BeltlikesUtils.identify_beltlike_line_entity_output_splitter_line_number(current_belt, next_belt, current_line_number)
         else
-          current_line_number = DisasterCoreBelts.identify_beltlike_line_entity_input_splitter_line_number(current_belt, next_belt, current_line_number)
+          current_line_number = BeltlikesUtils.identify_beltlike_line_entity_input_splitter_line_number(current_belt, next_belt, current_line_number)
         end
       end
       
@@ -623,6 +453,7 @@ end
 ---@field belt_count number Number of belts in the section
 ---@field effective_unit_count number Effective unit count (underground belts use distance between pair, splitters count as 2)
 ---@field belts LuaEntity[] Array of all belts in the section
+---@field beltlikes_unit_numbers_set table<number, boolean> Set of all beltlikes unit numbers in the section
 ---@field engines BeltEngineCacheRecord[] Array of all engines connected to the section
 
 --- Resolves a beltlike section starting from a given beltlike and returns information about all connected belts and engines.
@@ -650,11 +481,12 @@ function DisasterCoreBelts.resolve_beltlike_section(
   end
   
   -- Get start beltlike tier
-  local start_tier = DisasterCoreBelts.get_beltlike_tier(start_beltlike.name)
+  local start_tier = BeltlikesUtils.get_beltlike_tier(start_beltlike.name)
   
   -- Now traverse the beltlike section both forward and backward from start_beltlike using only belt_neighbours
   local visited_unit_numbers = {}
   local traversed_beltlikes = {}
+  local traversed_beltlikes_count = 0
   local engines_list = {}
   local effective_unit_count = 0  -- Counts resistance units: underground belts use distance, splitters count as 2 each
   
@@ -670,14 +502,18 @@ function DisasterCoreBelts.resolve_beltlike_section(
 
     visited_unit_numbers[beltlike_unit_number] = true
     table.insert(traversed_beltlikes, beltlike_entity)
+    traversed_beltlikes_count = traversed_beltlikes_count + 1
     
     local belt_entity_effective_units = beltlikes_types_to_effective_units_mapping[beltlike_entity.type] or 0
     effective_unit_count = effective_unit_count + belt_entity_effective_units + additional_effective_units
     
-    local cached_engines = DisasterCoreBelts.belt_engine_cache[beltlike_unit_number]
-    if cached_engines then
-      for _, belt_engine_cache_record in pairs(cached_engines) do
-        table.insert(engines_list, belt_engine_cache_record)
+    local beltlike_engines_unit_numbers = DisasterCoreBelts.beltlikes_engines_mapping_cache[beltlike_unit_number]
+    if beltlike_engines_unit_numbers then
+      for _, engine_unit_number in pairs(beltlike_engines_unit_numbers) do
+        local belt_engine_cache_record = DisasterCoreBelts.belt_engines_cache[engine_unit_number]
+        if belt_engine_cache_record then
+          table.insert(engines_list, belt_engine_cache_record)
+        end
       end
     end
     
@@ -742,9 +578,9 @@ function DisasterCoreBelts.resolve_beltlike_section(
   
   -- Process each branch
   -- Add safety limit to prevent infinite loops
-  local max_branches = MAX_BELT_LINE_LENGTH * 10  -- Allow many branches for complex splitter networks
+  local max_branches = 1000  -- Allow many branches for complex splitter networks
   local branch_count = 0
-  while branch_queue_index <= #branch_queue and branch_count < max_branches do
+  while branch_queue_index <= #branch_queue and branch_count < max_branches and traversed_beltlikes_count < MAX_BELTLIKES_SECTION_SIZE do
     branch_count = branch_count + 1
     local branch = branch_queue[branch_queue_index]
     branch_queue_index = branch_queue_index + 1
@@ -762,13 +598,8 @@ function DisasterCoreBelts.resolve_beltlike_section(
     -- Note: initial beltlike can be already traversed, so this may return false, but that's OK - we still need to traverse from it
     add_beltlike_entity(current_beltlike, 0)
     
-    local max_iterations = MAX_BELT_LINE_LENGTH
-    local iterations = 0
-    
     -- Traverse this branch completely using while loop (like old function)
-    while current_beltlike and current_beltlike.valid and iterations < max_iterations do
-      iterations = iterations + 1
-
+    while current_beltlike and current_beltlike.valid and traversed_beltlikes_count < MAX_BELTLIKES_SECTION_SIZE do
       local current_direction = current_beltlike.direction
       
       local next_beltlike = nil
@@ -783,11 +614,11 @@ function DisasterCoreBelts.resolve_beltlike_section(
               next_belt_additional_effective_units = Utils.manhattan_distance(current_beltlike.position, next_beltlike.position) - 1
             end
           else
-            next_beltlike = DisasterCoreBelts.select_from_neighbours_output_neighbour_in_line(current_direction, start_tier, current_beltlike.belt_neighbours)
+            next_beltlike = BeltlikesUtils.select_from_neighbours_output_neighbour_in_line(current_direction, start_tier, current_beltlike.belt_neighbours)
           end
         else
           if current_beltlike.belt_to_ground_type == "input" then
-            next_beltlike = DisasterCoreBelts.select_from_neighbours_input_neighbour_in_line(current_direction, start_tier, current_beltlike.belt_neighbours)
+            next_beltlike = BeltlikesUtils.select_from_neighbours_input_neighbour_in_line(current_direction, start_tier, current_beltlike.belt_neighbours)
           else
             next_beltlike = current_beltlike.neighbours
             -- Calculate distance for underground belt pair (current_belt -> next_belt)
@@ -805,10 +636,10 @@ function DisasterCoreBelts.resolve_beltlike_section(
           end
 
           -- Forward: use outputs
-          next_beltlike = DisasterCoreBelts.select_from_neighbours_output_neighbour_in_line(current_direction, start_tier, current_beltlike.belt_neighbours)
+          next_beltlike = BeltlikesUtils.select_from_neighbours_output_neighbour_in_line(current_direction, start_tier, current_beltlike.belt_neighbours)
         else
           -- Backward: use inputs
-          next_beltlike = DisasterCoreBelts.select_from_neighbours_input_neighbour_in_line(current_direction, start_tier, current_beltlike.belt_neighbours)
+          next_beltlike = BeltlikesUtils.select_from_neighbours_input_neighbour_in_line(current_direction, start_tier, current_beltlike.belt_neighbours)
         end
       elseif current_beltlike.type == "splitter" then
         -- When encountering splitter, determine how we came to it and collect all other connections
@@ -821,7 +652,7 @@ function DisasterCoreBelts.resolve_beltlike_section(
             for _, input in ipairs(splitter_neighbours.inputs) do
               if input and input.valid 
                 and (not came_from_beltlike_unit_number or input.unit_number ~= came_from_beltlike_unit_number)
-                and DisasterCoreBelts.is_beltlike_in_line_with_input_neighbour(current_direction, start_tier, inputs_count, input)
+                and BeltlikesUtils.is_beltlike_in_line_with_input_neighbour(current_direction, start_tier, inputs_count, input)
                 and not beltlike_section_dividers_names_set[input.name]
               then
                 add_branch(input, false, nil, current_beltlike.unit_number)
@@ -834,7 +665,7 @@ function DisasterCoreBelts.resolve_beltlike_section(
             for _, output in ipairs(splitter_neighbours.outputs) do
               if output and output.valid 
                 and (not came_from_beltlike_unit_number or output.unit_number ~= came_from_beltlike_unit_number)
-                and DisasterCoreBelts.is_beltlike_in_line_with_output_neighbour(current_direction, start_tier, output)
+                and BeltlikesUtils.is_beltlike_in_line_with_output_neighbour(current_direction, start_tier, output)
               then
                 add_branch(output, true, nil, current_beltlike.unit_number)
               end
@@ -927,9 +758,10 @@ function DisasterCoreBelts.resolve_beltlike_section(
   end
   
   local section_info = {
-    belt_count = #traversed_beltlikes,
+    belt_count = traversed_beltlikes_count,
     effective_unit_count = effective_unit_count,
     belts = traversed_beltlikes,
+    beltlikes_unit_numbers_set = visited_unit_numbers,
     engines = engines_list
   }
 
@@ -1023,47 +855,49 @@ function DisasterCoreBelts.can_beltlikes_section_be_active(section_info)
   return can_be_active, required_power, combined_power
 end
 
--- Function to activate beltlikes in section (replace zero-speed with working)
---- Activates all beltlikes in a section by replacing zero-speed variants with working variants.
---- Iterates through all belts in the section and replaces zero-speed belts with their working counterparts.
+--- Updates the beltlikes in a section based on the required power and combined power.
 --- @param section_info BeltSectionInfo Section information containing belts array
---- @return nil
-function DisasterCoreBelts.activate_beltlikes_in_section(section_info)
-  if not section_info or not section_info.belts then
-    return
+--- @param required_power number Required power to activate section
+--- @param combined_power number Combined engine power
+--- @return number speed_index Speed index
+function DisasterCoreBelts.update_beltlikes_in_section(section_info, required_power, combined_power)
+  local speed_index = 1
+  local power_ratio_range_start_value_label = "0"
+  local power_ratio_range_end_value_label = "∞"
+  if combined_power > 0 then
+    local power_ratio_speed_index, step_power_ratio = Beltlike.get_power_ratio_speed_index(required_power / combined_power)
+    
+    speed_index = power_ratio_speed_index
+    power_ratio_range_start_value_label = string.format("%.2f", combined_power * step_power_ratio)
+    power_ratio_range_end_value_label = power_ratio_speed_index > 1 and string.format("%.2f", combined_power * Beltlike.beltlikes_speed_reductions_steps_power_ratios[power_ratio_speed_index - 1]) or "∞"
   end
-  
-  for _, belt in ipairs(section_info.belts) do
-    if belt.valid then
-      local belt_name = belt.name
-      local target_name = beltlikes_zero_speed_to_working_mapping[belt_name]
-      
-      if target_name then
-        DisasterCoreBelts.replace_beltlike(belt, target_name, true)
-      end
-    end
-  end
-end
 
---- Deactivates all beltlikes in a section by replacing working variants with zero-speed variants.
---- Iterates through all belts in the section and replaces working belts with their zero-speed counterparts.
---- @param section_info BeltSectionInfo Section information containing belts array
---- @return nil
-function DisasterCoreBelts.deactivate_beltlikes_in_section(section_info)
-  if not section_info or not section_info.belts then
-    return
+  local power_ratio_range_label = {"beltlike.power-range", tostring(speed_index), power_ratio_range_start_value_label, power_ratio_range_end_value_label}
+  local speed_custom_status = { diode = defines.entity_status_diode.yellow, label = "" }
+  if speed_index == 1 then
+    speed_custom_status = { diode = defines.entity_status_diode.red, label = {"", {"beltlike.status.stopped"}, " ", power_ratio_range_label } }
+  elseif speed_index == Beltlike.beltlikes_speeds_count then
+    speed_custom_status = { diode = defines.entity_status_diode.green, label = {"", {"beltlike.status.moving"}, " ", power_ratio_range_label } }
+  else
+    speed_custom_status = { diode = defines.entity_status_diode.yellow, label = {"", {"beltlike.status.slowed"}, " ", power_ratio_range_label } }
   end
-  
+
+  local beltlikes_to_speeds_beltlikes_mapping = Beltlike.beltlikes_to_speeds_beltlikes_mapping
+
   for _, belt in ipairs(section_info.belts) do
     if belt.valid then
       local belt_name = belt.name
-      local target_name = beltlikes_working_to_zero_speed_mapping[belt_name]
-      
-      if target_name then
-        DisasterCoreBelts.replace_beltlike(belt, target_name, true)
+      local speed_beltlikes = beltlikes_to_speeds_beltlikes_mapping[belt_name]
+      if speed_beltlikes then
+        local target_name = speed_beltlikes[speed_index] or belt_name
+        if target_name ~= belt_name then
+          DisasterCoreBelts.replace_beltlike(belt, target_name, speed_custom_status, true)
+        end
       end
     end
   end
+
+  return speed_index
 end
 
 --- Resolves a beltlike section starting from a given beltlike and updates the section entities states based on the resolved section information.
@@ -1084,11 +918,7 @@ function DisasterCoreBelts.resolve_and_update_beltlikes_section(start_beltlike, 
   local start_beltlike_position = start_beltlike.position
   
   local section_active, required_power, combined_power = DisasterCoreBelts.can_beltlikes_section_be_active(section_info)
-  if section_active then
-    DisasterCoreBelts.activate_beltlikes_in_section(section_info)
-  else
-    DisasterCoreBelts.deactivate_beltlikes_in_section(section_info)
-  end
+  local speed_index = DisasterCoreBelts.update_beltlikes_in_section(section_info, required_power, combined_power)
 
   if DisasterCoreBelts.events_handlers.on_beltlikes_section_updated ~= nil then
     DisasterCoreBelts.events_handlers.on_beltlikes_section_updated{
@@ -1098,6 +928,7 @@ function DisasterCoreBelts.resolve_and_update_beltlikes_section(start_beltlike, 
       section_active = section_active,
       required_power = required_power,
       combined_power = combined_power,
+      speed_index = speed_index,
       player_index = player_index
     }
   end
@@ -1111,9 +942,10 @@ end
 --- Can optionally skip triggering the on_entity_died event to prevent infinite loops.
 --- @param beltlike LuaEntity Beltlike entity (transport-belt, underground-belt, or splitter) to replace
 --- @param target_beltlikename string Name of the target beltlike entity type to replace with
+--- @param custom_status? CustomEntityStatus custom entity status to set on the new beltlike
 --- @param skip_event? boolean If true, skips triggering on_entity_died event (default: false)
 --- @return LuaEntity? New beltlike entity after replacement, or nil if replacement failed or beltlike is invalid
-function DisasterCoreBelts.replace_beltlike(beltlike, target_beltlikename, skip_event)
+function DisasterCoreBelts.replace_beltlike(beltlike, target_beltlikename, custom_status, skip_event)
   if not beltlike or not beltlike.valid then
     return nil
   end
@@ -1146,6 +978,7 @@ function DisasterCoreBelts.replace_beltlike(beltlike, target_beltlikename, skip_
   }
   
   if new_beltlike and new_beltlike.valid and new_beltlike.unit_number then
+    new_beltlike.custom_status = custom_status
     -- Transfer engines cache from old belt to new belt
     DisasterCoreBelts.swap_beltlike_engines_cache(old_unit_number, new_beltlike.unit_number)
   end
@@ -1153,212 +986,6 @@ function DisasterCoreBelts.replace_beltlike(beltlike, target_beltlikename, skip_
   DisasterCoreBelts.replacing_belts[old_unit_number] = nil
   
   return new_beltlike
-end
-
--- Function to find potential underground belt pair manually (when game doesn't link them)
--- Searches in direction based on belt_to_ground_type, within max_underground_distance
--- For input: searches forward in belt.direction (where output should be)
--- For output: searches backward in opposite direction (where input should be)
--- other_side: optional entity to exclude from search (calculate offset based on distance to it)
---- Finds a potential underground belt pair for the given underground belt entity.
---- Searches in the appropriate direction (forward for input, backward for output) for an underground belt of the same tier.
---- Excludes the other_side position from the search area to avoid finding the same entity.
---- @param belt LuaEntity Underground belt entity to find a pair for
---- @param belt_tier string Tier of the belt ("basic", "fast", "express", or "turbo")
---- @param other_side LuaEntity? Optional entity to exclude from search (typically the removed entity)
---- @return LuaEntity? Found underground belt pair, or nil if none found or belt is invalid
-function DisasterCoreBelts.find_potential_underground_belt_pair(belt, belt_tier, other_side)
-  if not belt or not belt.valid or belt.type ~= "underground-belt" then
-    return nil
-  end
-  
-  local surface = belt.surface
-  local belt_pos = belt.position
-  local belt_direction = belt.direction
-  
-  -- Calculate search direction based on belt_to_ground_type
-  local search_direction = belt_direction
-  if belt.belt_to_ground_type == "output" then
-    -- For output, search in opposite direction (backward) to find input
-    search_direction = opposite_directions_map[belt_direction] or belt_direction
-  end
-  -- For input, search in belt.direction (forward) to find output
-  
-  -- Calculate offset to exclude other_side from search
-  local start_offset = 1.0  -- Default: start search 1 tile away
-  if other_side and other_side.valid then
-    local other_side_pos = other_side.position
-    -- Calculate absolute distance between other_side and belt
-    local dx = belt_pos.x - other_side_pos.x
-    local dy = belt_pos.y - other_side_pos.y
-    local absolute_distance = math.sqrt(dx * dx + dy * dy)
-    -- Use absolute distance + small offset to exclude other_side position
-    if absolute_distance > 0 then
-      start_offset = absolute_distance + 0.5  -- Add 0.5 to exclude other_side
-    end
-  end
-  
-  -- Get max_underground_distance from prototype
-  local belt_prototype = belt.prototype
-  if not belt_prototype then
-    return nil
-  end
-  
-  local max_distance = belt_prototype.max_underground_distance or 5  -- Default to 5 if not specified
-  
-  -- Calculate direction vector
-  local dir_vec = directions_vectors_map[search_direction]
-  if not dir_vec then
-    return nil
-  end
-  
-  -- Determine opposite belt_to_ground_type
-  local opposite_type = belt.belt_to_ground_type == "input" and "output" or "input"
-  
-  -- Search for underground belts of the same tier in opposite direction
-  -- Check all possible names (regular and zero-speed) for the same tier
-  local possible_names = {}
-  if belt_tier == "basic" then
-    table.insert(possible_names, "underground-belt")
-    table.insert(possible_names, "zero-speed-underground-belt")
-  elseif belt_tier == "fast" then
-    table.insert(possible_names, "fast-underground-belt")
-    table.insert(possible_names, "zero-speed-fast-underground-belt")
-  elseif belt_tier == "express" then
-    table.insert(possible_names, "express-underground-belt")
-    table.insert(possible_names, "zero-speed-express-underground-belt")
-  elseif belt_tier == "turbo" then
-    table.insert(possible_names, "turbo-underground-belt")
-    table.insert(possible_names, "zero-speed-turbo-underground-belt")
-  end
-  
-  -- Search in rectangular area in direction, up to max_distance
-  -- Exclude belt position and other_side from search
-  local start_pos = {
-    x = belt_pos.x + dir_vec[1] * start_offset,
-    y = belt_pos.y + dir_vec[2] * start_offset
-  }
-  
-  -- Calculate bounding box for search area
-  local end_pos = {
-    x = belt_pos.x + dir_vec[1] * max_distance,
-    y = belt_pos.y + dir_vec[2] * max_distance
-  }
-  
-  -- Create rectangular area (accounting for perpendicular direction for width)
-  local perp_vec = {x = -dir_vec[2], y = dir_vec[1]}  -- Perpendicular vector for width
-  local half_width = 0.5  -- Half width of search area (1 tile total width)
-  
-  -- Calculate corners of the rectangle (starting from start_pos, not other_side_pos)
-  local corner1 = {
-    x = start_pos.x + perp_vec.x * half_width,
-    y = start_pos.y + perp_vec.y * half_width
-  }
-  local corner2 = {
-    x = start_pos.x - perp_vec.x * half_width,
-    y = start_pos.y - perp_vec.y * half_width
-  }
-  local corner3 = {
-    x = end_pos.x + perp_vec.x * half_width,
-    y = end_pos.y + perp_vec.y * half_width
-  }
-  local corner4 = {
-    x = end_pos.x - perp_vec.x * half_width,
-    y = end_pos.y - perp_vec.y * half_width
-  }
-  
-  -- Find bounding box and expand slightly to ensure boundary points are included
-  -- Factorio's area uses [left_top, right_bottom) interval, so we need to expand right_bottom
-  local min_x = math.min(corner1.x, corner2.x, corner3.x, corner4.x)
-  local min_y = math.min(corner1.y, corner2.y, corner3.y, corner4.y)
-  local max_x = math.max(corner1.x, corner2.x, corner3.x, corner4.x)
-  local max_y = math.max(corner1.y, corner2.y, corner3.y, corner4.y)
-  
-  -- Expand area to include boundary points (add small epsilon to right_bottom)
-  local area = {
-    left_top = {x = min_x - 0.1, y = min_y - 0.1},
-    right_bottom = {x = max_x + 0.1, y = max_y + 0.1}
-  }
-  
-  -- Single call to find all underground belts in the area
-  local found_belts = surface.find_entities_filtered{
-    area = area,
-    name = possible_names,
-    type = "underground-belt"
-  }
-  
-  -- Find closest valid belt matching criteria
-  local closest_belt = nil
-  local closest_distance = math.huge
-  
-  for _, found_belt in ipairs(found_belts) do
-    if found_belt.valid 
-      -- and found_belt.belt_to_ground_type == opposite_type
-      -- and found_belt.direction == belt_direction
-      and DisasterCoreBelts.is_same_tier_beltlike(found_belt.name, belt_tier)
-    then
-      -- Calculate distance along direction (dot product with direction vector)
-      local found_belt_pos = found_belt.position
-      local relative_pos = {
-        x = found_belt_pos.x - belt_pos.x,
-        y = found_belt_pos.y - belt_pos.y
-      }
-      
-      -- Distance along direction (should be positive and >= start_offset)
-      local distance_along = relative_pos.x * dir_vec[1] + relative_pos.y * dir_vec[2]
-      
-      -- Only consider belts in the search direction (area already excludes belt_pos)
-      if distance_along >= start_offset and distance_along <= max_distance then
-        if distance_along < closest_distance then
-          closest_distance = distance_along
-          closest_belt = found_belt
-        end
-      end
-    end
-  end
-  
-  return closest_belt
-end
-
--- Function to find adjacent belt in specified direction
--- @param belt: The belt entity to search from
--- @param search_direction: The direction to search in (defines.direction)
--- @param radius: Optional search radius (default: 0.2)
--- @return: Found belt entity or nil
-function DisasterCoreBelts.find_adjacent_beltlike_in_direction(beltlike, search_direction, radius)
-  if not beltlike or not beltlike.valid then
-    return nil
-  end
-  
-  radius = radius or 0.2
-  
-  local dir_vec = directions_vectors_map[search_direction]
-  if not dir_vec then
-    return nil
-  end
-  
-  local belt_pos = beltlike.position
-  local surface = beltlike.surface
-  
-  local search_pos = {
-    x = belt_pos.x + dir_vec[1],
-    y = belt_pos.y + dir_vec[2]
-  }
-  
-  local nearby_belts = surface.find_entities_filtered{
-    position = search_pos,
-    radius = radius,
-    type = beltlikes_types
-  }
-  
-  -- Return first valid belt
-  for _, nearby_belt in ipairs(nearby_belts) do
-    if nearby_belt.valid then
-      return nearby_belt
-    end
-  end
-  
-  return nil
 end
 
 --- Finds the first beltlike entity in the direction the engine is facing that is perpendicular to the engine.
@@ -1451,12 +1078,9 @@ end
 --- @param belt_engine LuaEntity Belt engine entity to check
 --- @return boolean True if belt engine is working, false otherwise
 function DisasterCoreBelts.is_belt_engine_working(belt_engine)
-  if not belt_engine or not belt_engine.valid then
-    return false
-  end
-
-  return belt_engine.status == defines.entity_status.working
-    or belt_engine.status == defines.entity_status.low_power
+  local belt_engine_status = belt_engine.status
+  return belt_engine_status == defines_entity_status_working
+    or belt_engine_status == defines_entity_status_low_power
 end
 
 --- Registers an engine to the belt's engine cache.
@@ -1470,18 +1094,21 @@ function DisasterCoreBelts.register_belt_engine(beltlike_unit_number, engine)
   if not beltlike_unit_number or not engine_unit_number then
     return
   end
-  
-  -- Initialize cache for this belt if needed
-  if not DisasterCoreBelts.belt_engine_cache[beltlike_unit_number] then
-    DisasterCoreBelts.belt_engine_cache[beltlike_unit_number] = {}
-  end
-  
-  -- Add engine to belt's cache
-  DisasterCoreBelts.belt_engine_cache[beltlike_unit_number][engine_unit_number] = {
+
+  DisasterCoreBelts.belt_engines_cache[engine_unit_number] = {
     working = DisasterCoreBelts.is_belt_engine_working(engine),
     engine = engine,
   }
+  table.insert(DisasterCoreBelts.belt_engines_unit_numbers_cache, engine_unit_number)
   DisasterCoreBelts.belt_engines_count = DisasterCoreBelts.belt_engines_count + 1
+  
+  -- Initialize cache for this belt if needed
+  if not DisasterCoreBelts.beltlikes_engines_mapping_cache[beltlike_unit_number] then
+    DisasterCoreBelts.beltlikes_engines_mapping_cache[beltlike_unit_number] = {}
+  end
+  
+  -- Add engine to belt's cache
+  DisasterCoreBelts.beltlikes_engines_mapping_cache[beltlike_unit_number][engine_unit_number] = engine_unit_number
 end
 
 --- Unregister an engine from the belt's engine cache.
@@ -1489,23 +1116,32 @@ end
 --- @param engine LuaEntity? Engine entity to remove from the belt's cache, if nil, all engines for the beltlike will be unregistered
 --- @return nil
 function DisasterCoreBelts.unregister_belt_engine(beltlike_unit_number, engine)
-  local cached_engines = DisasterCoreBelts.belt_engine_cache[beltlike_unit_number]
-  if not cached_engines then
+  local beltlike_engines_unit_numbers = DisasterCoreBelts.beltlikes_engines_mapping_cache[beltlike_unit_number]
+  if not beltlike_engines_unit_numbers then
     return
   end
 
   if not engine or not engine.valid then
-    for _, _ in pairs(cached_engines) do
+    for _, belt_engine_unit_number in pairs(beltlike_engines_unit_numbers) do
+      local index = Utils.index_of(DisasterCoreBelts.belt_engines_unit_numbers_cache, belt_engine_unit_number)
+      if index then
+        table.remove(DisasterCoreBelts.belt_engines_unit_numbers_cache, index)
+      end
       DisasterCoreBelts.belt_engines_count = DisasterCoreBelts.belt_engines_count - 1
     end
-    DisasterCoreBelts.belt_engine_cache[beltlike_unit_number] = nil
+    DisasterCoreBelts.beltlikes_engines_mapping_cache[beltlike_unit_number] = nil
   else
-    cached_engines[engine.unit_number] = nil
-    -- Clean up empty cache entries
-    if next(cached_engines) == nil then
-      DisasterCoreBelts.belt_engine_cache[beltlike_unit_number] = nil
+    beltlike_engines_unit_numbers[engine.unit_number] = nil
+    local index = Utils.index_of(DisasterCoreBelts.belt_engines_unit_numbers_cache, engine.unit_number)
+    if index then
+      table.remove(DisasterCoreBelts.belt_engines_unit_numbers_cache, index)
     end
     DisasterCoreBelts.belt_engines_count = DisasterCoreBelts.belt_engines_count - 1
+
+    -- Clean up empty cache entries
+    if next(beltlike_engines_unit_numbers) == nil then
+      DisasterCoreBelts.beltlikes_engines_mapping_cache[beltlike_unit_number] = nil
+    end
   end
 end
 
@@ -1514,13 +1150,13 @@ end
 --- @param new_beltlike_unit_number number Unit number of the new beltlike entity
 --- @return nil
 function DisasterCoreBelts.swap_beltlike_engines_cache(old_beltlike_unit_number, new_beltlike_unit_number)
-  local old_engines_cache = DisasterCoreBelts.belt_engine_cache[old_beltlike_unit_number]
-  if not old_engines_cache then
+  local old_beltlike_engines_unit_numbers = DisasterCoreBelts.beltlikes_engines_mapping_cache[old_beltlike_unit_number]
+  if not old_beltlike_engines_unit_numbers then
     return
   end
 
-  DisasterCoreBelts.belt_engine_cache[new_beltlike_unit_number] = old_engines_cache
-  DisasterCoreBelts.belt_engine_cache[old_beltlike_unit_number] = nil
+  DisasterCoreBelts.beltlikes_engines_mapping_cache[new_beltlike_unit_number] = old_beltlike_engines_unit_numbers
+  DisasterCoreBelts.beltlikes_engines_mapping_cache[old_beltlike_unit_number] = nil
 
   if DisasterCoreBelts.engine_processing_last_belt_key == old_beltlike_unit_number then
     DisasterCoreBelts.engine_processing_last_belt_key = new_beltlike_unit_number
@@ -1538,26 +1174,26 @@ function DisasterCoreBelts.configure_belt_engine_for_beltlike(belt_engine, beltl
   belt_engine.mirroring = next_perpendicular_directions_map[belt_engine.direction] ~= beltlike.direction
 end
 
---- Calculates the number of entities to process in one cycle of belt engines processing.
---- @return number Number of entities to process in one cycle of belt engines processing
-function DisasterCoreBelts.calc_belt_engines_processing_cycle_entities_per_tick_count()
+--- Calculates the number of belt engines to process in one cycle of belt engines processing window.
+--- @return number Number of belt engines to process in one cycle of belt engines processing window
+function DisasterCoreBelts.calc_belt_engines_count_per_processing_window_cycle()
   local belt_engines_count = DisasterCoreBelts.belt_engines_count
   
-  if belt_engines_count <= ENGINES_PROCESSING_ENTITIES_COUNT_SCALING_THRESHOLD then
-    -- Квадратичное масштабирование времени цикла от MIN до MAX для малых количеств
-    local normalized = belt_engines_count / ENGINES_PROCESSING_ENTITIES_COUNT_SCALING_THRESHOLD
-    local progress = normalized * normalized  -- Квадратичное масштабирование
-    local current_cycle_ticks = MIN_ENGINES_PROCESSING_CYCLE_TICKS + progress * (MAX_ENGINES_PROCESSING_CYCLE_TICKS - MIN_ENGINES_PROCESSING_CYCLE_TICKS)
-    return math.ceil(belt_engines_count / current_cycle_ticks)
+  if belt_engines_count <= ENGINES_PROCESSING_WINDOW_ENTITIES_COUNT_SCALING_THRESHOLD then
+    local normalized = belt_engines_count / ENGINES_PROCESSING_WINDOW_ENTITIES_COUNT_SCALING_THRESHOLD
+    local progress = normalized * normalized
+    local scaled_window_cycles_count = ENGINES_PROCESSING_WINDOW_MIN_CYCLES_COUNT + progress * (ENGINES_PROCESSING_WINDOW_MAX_CYCLES_COUNT - ENGINES_PROCESSING_WINDOW_MIN_CYCLES_COUNT)
+    return math.ceil(belt_engines_count / scaled_window_cycles_count)
   else
-    -- Гарантируем обработку всех двигателей за MAX_ENGINES_PROCESSING_CYCLE_TICKS
-    return math.ceil(belt_engines_count / MAX_ENGINES_PROCESSING_CYCLE_TICKS)
+    -- Guarantee processing of all engines within ENGINES_PROCESSING_WINDOW_MAX_CYCLES_COUNT cycles
+    return math.ceil(belt_engines_count / ENGINES_PROCESSING_WINDOW_MAX_CYCLES_COUNT)
   end
 end
 
 --- Processes one cycle of belt engines processing.
+--- @deprecated
 function DisasterCoreBelts.do_belt_engines_cycle_processing_tick()
-  local entities_per_tick = DisasterCoreBelts.calc_belt_engines_processing_cycle_entities_per_tick_count()
+  local entities_per_tick = DisasterCoreBelts.calc_belt_engines_count_per_processing_window_cycle()
   
   local engine_processing_last_belt_key = DisasterCoreBelts.engine_processing_last_belt_key
   local engine_processing_last_belt_engine_key = DisasterCoreBelts.engine_processing_last_belt_engine_key
@@ -1565,12 +1201,12 @@ function DisasterCoreBelts.do_belt_engines_cycle_processing_tick()
   local processed_engines_count = 0
   while processed_engines_count < entities_per_tick do
     --- TODO: improve fix, find reason why engine_processing_last_belt_key became invalid for belt_engine_cache
-    if DisasterCoreBelts.belt_engine_cache[engine_processing_last_belt_key] == nil then
+    if DisasterCoreBelts.beltlikes_engines_mapping_cache[engine_processing_last_belt_key] == nil then
       engine_processing_last_belt_key = nil
       engine_processing_last_belt_engine_key = nil
     end
 
-    local belt_unit_number, engines_cache = next(DisasterCoreBelts.belt_engine_cache, engine_processing_last_belt_key)
+    local belt_unit_number, engines_cache = next(DisasterCoreBelts.beltlikes_engines_mapping_cache, engine_processing_last_belt_key)
     if not belt_unit_number or not engines_cache then
       engine_processing_last_belt_key = nil
       engine_processing_last_belt_engine_key = nil
@@ -1632,6 +1268,26 @@ function DisasterCoreBelts.do_belt_engines_cycle_processing_tick()
   DisasterCoreBelts.engine_processing_last_belt_engine_key = engine_processing_last_belt_engine_key
 end
 
+function DisasterCoreBelts.do_belt_engines_processing_window_cycle()
+  local engines_processing_window_engine_index = DisasterCoreBelts.engines_processing_window_engine_index
+  local engines_processing_window_engine_count = DisasterCoreBelts.calc_belt_engines_count_per_processing_window_cycle()
+  local cycle_end_index = math.min(engines_processing_window_engine_index + engines_processing_window_engine_count, DisasterCoreBelts.belt_engines_count)
+  while engines_processing_window_engine_index <= cycle_end_index do
+    local engine_unit_number = DisasterCoreBelts.belt_engines_unit_numbers_cache[engines_processing_window_engine_index]
+    local belt_engine_cache_record = DisasterCoreBelts.belt_engines_cache[engine_unit_number]
+    if belt_engine_cache_record then
+      DisasterCoreBelts.revaluate_belt_engine(belt_engine_cache_record)
+    end
+    engines_processing_window_engine_index = engines_processing_window_engine_index + 1
+  end
+
+  if engines_processing_window_engine_index > DisasterCoreBelts.belt_engines_count then
+    DisasterCoreBelts.engines_processing_window_engine_index = 1
+  else
+    DisasterCoreBelts.engines_processing_window_engine_index = engines_processing_window_engine_index
+  end
+end
+
 ---@param engine LuaEntity engine
 ---@param player_index? number Optional player index in which context is being resolved
 function DisasterCoreBelts.handle_belt_engine_built(engine, player_index)
@@ -1641,10 +1297,12 @@ function DisasterCoreBelts.handle_belt_engine_built(engine, player_index)
 
   engine.rotatable = false -- Prevent engine from being rotated after being built
 
+  local ticks_played = game.ticks_played
+  DisasterCoreBelts.last_pending_belt_engine_built_action_tick = ticks_played
   DisasterCoreBelts.pending_belt_engine_built_actions[engine.unit_number] = {
+    tick = ticks_played,
     engine = engine,
     player_index = player_index,
-    tick = game.ticks_played,
   }
 end
 
@@ -1670,8 +1328,12 @@ function DisasterCoreBelts.handle_belt_engine_removed(engine, player_index)
   -- Remove engine from belt cache
   DisasterCoreBelts.unregister_belt_engine(beltlike.unit_number, engine)
   
-  -- Resolve line from found belt
-  DisasterCoreBelts.resolve_and_update_beltlikes_section(beltlike, nil, nil, nil, nil, player_index)
+  DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_action_tick = game.ticks_played
+  table.insert(DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions_beltlikes_unit_numbers, beltlike.unit_number)
+  DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions[beltlike.unit_number] = {
+    beltlike = beltlike,
+    player_index = player_index,
+  }
 end
 
 ---@param beltlike LuaEntity beltlike
@@ -1681,7 +1343,12 @@ function DisasterCoreBelts.handle_beltlike_built(beltlike, player_index)
     return
   end
 
-  if DisasterCoreBelts.replacing_belts[beltlike.unit_number] then
+  local beltlike_unit_number = beltlike.unit_number
+  if not beltlike_unit_number then
+    return
+  end
+
+  if DisasterCoreBelts.replacing_belts[beltlike_unit_number] then
     return  -- Skip processing for belts we're replacing
   end
 
@@ -1689,24 +1356,8 @@ function DisasterCoreBelts.handle_beltlike_built(beltlike, player_index)
   local engines = DisasterCoreBelts.find_engines_directed_at_beltlike(beltlike)
   for _, engine in ipairs(engines) do
     if engine.valid then
-      DisasterCoreBelts.register_belt_engine(beltlike.unit_number, engine)
+      DisasterCoreBelts.register_belt_engine(beltlike_unit_number, engine)
       DisasterCoreBelts.configure_belt_engine_for_beltlike(engine, beltlike)
-    end
-  end
-
-  if DisasterCoreBelts.pending_beltlike_removal_process_action then
-    local belt_name = DisasterCoreBelts.pending_beltlike_removal_process_action.belt_name
-    local belt_pos = DisasterCoreBelts.pending_beltlike_removal_process_action.belt_pos
-    local belt_direction = DisasterCoreBelts.pending_beltlike_removal_process_action.belt_direction
-
-    if belt_pos.x == beltlike.position.x
-      and belt_pos.y == beltlike.position.y
-      and belt_direction == beltlike.direction
-      and (beltlikes_zero_speed_to_working_mapping[beltlike.name] == belt_name or beltlikes_working_to_zero_speed_mapping[beltlike.name] == belt_name)
-    then
-      DisasterCoreBelts.cancel_pending_beltlike_removal_process_action()
-      DisasterCoreBelts.replace_beltlike(beltlike, belt_name, true)
-      return
     end
   end
 
@@ -1718,50 +1369,135 @@ function DisasterCoreBelts.handle_beltlike_built(beltlike, player_index)
     beltlike_control_behavior.circuit_enable_disable = false
   end
 
+  local actual_beltlike = beltlike
+  local ticks_played = game.ticks_played
+
   if beltlike.type == "underground-belt" then
     if beltlike.neighbours and beltlike.neighbours.valid then
       -- Built belt have a pair, we need to check if we didnt have link to other entity before
-      local potential_pair = DisasterCoreBelts.find_potential_underground_belt_pair(beltlike.neighbours, DisasterCoreBelts.get_beltlike_tier(beltlike.neighbours.name), beltlike)
+      local potential_pair = BeltlikesUtils.find_potential_underground_belt_pair(beltlike.neighbours, BeltlikesUtils.get_beltlike_tier(beltlike.neighbours.name), beltlike)
       if potential_pair and potential_pair.valid then
         -- Revalue line info for disconnected pair
 
-        DisasterCoreBelts.resolve_and_update_beltlikes_section(
-          potential_pair,
-          potential_pair.belt_to_ground_type == "output",
-          potential_pair.belt_to_ground_type == "input",
-          nil,
-          nil,
-          player_index
-        )
+        DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_action_tick = ticks_played
+        table.insert(DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions_beltlikes_unit_numbers, potential_pair.unit_number)
+        DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions[potential_pair.unit_number] = {
+          beltlike = potential_pair,
+          traverse_forward_only = potential_pair.belt_to_ground_type == "output",
+          traverse_backward_only = potential_pair.belt_to_ground_type == "input",
+          backward_jumps = nil,
+          forward_jumps = nil,
+          player_index = player_index,
+        }
       end
 
-      -- Resolve line from built belt
-      DisasterCoreBelts.resolve_and_update_beltlikes_section(beltlike, nil, nil, nil, nil, player_index)
+      -- Plan resolve line from built belt
+
+      DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_action_tick = ticks_played
+      table.insert(DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions_beltlikes_unit_numbers, beltlike_unit_number)
+      DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions[beltlike_unit_number] = {
+        beltlike = beltlike,
+        player_index = player_index,
+      }
     else
       -- No neighbour belt found, we need to check if we have potential pair that in opposite state (0-speed or working)
 
       local jumps = {}
-      local potential_pair = DisasterCoreBelts.find_potential_underground_belt_pair(beltlike, DisasterCoreBelts.get_beltlike_tier(beltlike.name))
+      local potential_pair = BeltlikesUtils.find_potential_underground_belt_pair(beltlike, BeltlikesUtils.get_beltlike_tier(beltlike.name))
       if potential_pair and potential_pair.valid then
-        jumps[beltlike.unit_number] = potential_pair
+
+        --- replacing built belt to match potential pair direction with oppposite belt_to_ground_type
+        local matching_beltlike = beltlike.surface.create_entity{
+          name = potential_pair.name,
+          position = beltlike.position,
+          direction = potential_pair.direction,
+          force = beltlike.force,
+          fast_replace = true,
+          spill = false,
+          create_build_effect_smoke = false,
+          raise_built = false,
+          type = potential_pair.belt_to_ground_type == "output" and "input" or "output",
+        }
+        if not matching_beltlike or not matching_beltlike.valid then
+          game.print("[handle_beltlike_built] Failed to create matching underground belt: " .. tostring(potential_pair.name))
+          return
+        end
+        DisasterCoreBelts.swap_beltlike_engines_cache(beltlike_unit_number, matching_beltlike.unit_number)
+
+        actual_beltlike = matching_beltlike
       end
 
-      DisasterCoreBelts.resolve_and_update_beltlikes_section(
-        beltlike,
-        false,
-        false,
-        beltlike.belt_to_ground_type == "output" and jumps or nil,
-        beltlike.belt_to_ground_type == "input" and jumps or nil,
-        player_index
-      )
+      DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_action_tick = ticks_played
+      table.insert(DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions_beltlikes_unit_numbers, actual_beltlike.unit_number)
+      DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions[actual_beltlike.unit_number] = {
+        beltlike = actual_beltlike,
+        backward_jumps = actual_beltlike.belt_to_ground_type == "output" and jumps or nil,
+        forward_jumps = actual_beltlike.belt_to_ground_type == "input" and jumps or nil,
+        player_index = player_index,
+      }
     end
   elseif beltlike.type == "transport-belt" then
     -- Resolve line from built belt
-    DisasterCoreBelts.resolve_and_update_beltlikes_section(beltlike, nil, nil, nil, nil, player_index)
+
+    DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_action_tick = ticks_played
+    table.insert(DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions_beltlikes_unit_numbers, beltlike_unit_number)
+    DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions[beltlike_unit_number] = {
+      beltlike = beltlike,
+      player_index = player_index,
+    }
   elseif beltlike.type == "splitter" then
-    DisasterCoreBelts.resolve_and_update_beltlikes_section(beltlike, nil, nil, nil, nil, player_index)
+    DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_action_tick = ticks_played
+    table.insert(DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions_beltlikes_unit_numbers, beltlike_unit_number)
+    DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions[beltlike_unit_number] = {
+      beltlike = beltlike,
+      player_index = player_index,
+    }
   else
     game.print("[handle_belt_built] Unknown belt type: " .. tostring(beltlike.type))
+    return
+  end
+
+  --- it possible that we formed a T junction, T junction can form 2 or 3 new beltlike sections
+  --- We need to check built beltlike output neighbours that are turn belts, and resolve beltlikes sections for their input neighbours and itself if built beltlike is in different direction, 
+  --- excluding from output neighbours input neighbours built beltlike itself and inputs neighbours in same direction with same tier
+  local beltlike_unit_number = actual_beltlike.unit_number
+  local beltlike_direction = actual_beltlike.direction
+  local beltlike_belt_neighbours = actual_beltlike.belt_neighbours
+  if beltlike_belt_neighbours.outputs and #beltlike_belt_neighbours.outputs > 0 then
+    for _, beltlike_output_belt_neighbour in ipairs(beltlike_belt_neighbours.outputs) do
+      if beltlike_output_belt_neighbour and beltlike_output_belt_neighbour.valid then
+        if BeltlikesUtils.is_will_be_or_was_turn_belt(beltlike_output_belt_neighbour) and beltlike_output_belt_neighbour.unit_number then
+          local beltlike_output_belt_neighbour_tier = BeltlikesUtils.get_beltlike_tier(beltlike_output_belt_neighbour.name)
+          local beltlike_output_belt_neighbour_direction = beltlike_output_belt_neighbour.direction
+          for _, input_belt_neighbour in ipairs(beltlike_output_belt_neighbour.belt_neighbours.inputs) do
+            if input_belt_neighbour and input_belt_neighbour.valid then
+              if input_belt_neighbour.unit_number ~= beltlike_unit_number
+                and (
+                  input_belt_neighbour.direction ~= beltlike_output_belt_neighbour_direction
+                    or not BeltlikesUtils.is_same_tier_beltlike(input_belt_neighbour.name, beltlike_output_belt_neighbour_tier)
+                )
+              then
+                table.insert(DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions_beltlikes_unit_numbers, input_belt_neighbour.unit_number)
+                DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions[input_belt_neighbour.unit_number] = {
+                  beltlike = input_belt_neighbour,
+                  traverse_backward_only = true,
+                  player_index = player_index,
+                }
+              end
+            end
+          end
+
+          if beltlike_output_belt_neighbour_direction ~= beltlike_direction then
+            table.insert(DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions_beltlikes_unit_numbers, beltlike_output_belt_neighbour.unit_number)
+            DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions[beltlike_output_belt_neighbour.unit_number] = {
+              beltlike = beltlike_output_belt_neighbour,
+              traverse_forward_only = true,
+              player_index = player_index,
+            }
+          end
+        end
+      end
+    end
   end
 end
 
@@ -1790,9 +1526,9 @@ function DisasterCoreBelts.handle_beltlike_rotated(beltlike, player_index)
           -- No input neighbours, we need to find adjacent belt in belt opposite direction
           local search_direction = opposite_directions_map[belt.direction]
           if search_direction then
-            local adjacent_belt = DisasterCoreBelts.find_adjacent_beltlike_in_direction(belt, search_direction)
+            local adjacent_belt = BeltlikesUtils.find_adjacent_beltlike_in_direction(belt, search_direction)
             if adjacent_belt
-              and DisasterCoreBelts.is_same_tier_beltlike(adjacent_belt.name, DisasterCoreBelts.get_beltlike_tier(belt.name))
+              and BeltlikesUtils.is_same_tier_beltlike(adjacent_belt.name, BeltlikesUtils.get_beltlike_tier(belt.name))
               and adjacent_belt.direction == search_direction
             then
               DisasterCoreBelts.resolve_and_update_beltlikes_section(adjacent_belt, nil, nil, nil, nil, player_index)
@@ -1802,9 +1538,9 @@ function DisasterCoreBelts.handle_beltlike_rotated(beltlike, player_index)
       else
         if not belt_neighbours or not belt_neighbours.outputs or #belt_neighbours.outputs < 1 then
           -- No output neighbours, we need to find adjacent belt in belt direction, adjacent belt must be in opposite direction
-          local adjacent_belt = DisasterCoreBelts.find_adjacent_beltlike_in_direction(belt, belt.direction)
+          local adjacent_belt = BeltlikesUtils.find_adjacent_beltlike_in_direction(belt, belt.direction)
           if adjacent_belt
-            and DisasterCoreBelts.is_same_tier_beltlike(adjacent_belt.name, DisasterCoreBelts.get_beltlike_tier(belt.name))
+            and BeltlikesUtils.is_same_tier_beltlike(adjacent_belt.name, BeltlikesUtils.get_beltlike_tier(belt.name))
             and adjacent_belt.direction == opposite_directions_map[belt.direction]
           then
             DisasterCoreBelts.resolve_and_update_beltlikes_section(adjacent_belt, nil, nil, nil, nil, player_index)
@@ -2008,98 +1744,247 @@ end
 
 --- @param removed_beltlike LuaEntity Beltlike entity to remove
 ---@param player_index? number Optional player index in which context is being resolved
-function DisasterCoreBelts.handle_beltlike_removed(removed_beltlike, player_index)
+---@param direct_player_action? boolean Optional flag indicating if the action is direct player action
+function DisasterCoreBelts.handle_beltlike_removed(removed_beltlike, player_index, direct_player_action)
   if not removed_beltlike or not removed_beltlike.valid then
+    game.print("[DisasterCoreBelts] handle_beltlike_removed: removed_beltlike is not valid")
     return
   end
   
   local belt_unit_number = removed_beltlike.unit_number
   if not belt_unit_number then
+    game.print("[DisasterCoreBelts] handle_beltlike_removed: belt_unit_number is not set")
+    return
+  end
+
+  DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions[belt_unit_number] = nil
+
+  -- Remove from cache (if it was cached)
+  DisasterCoreBelts.unregister_belt_engine(belt_unit_number)
+
+  local ticks_played = game.ticks_played
+
+  if direct_player_action then
+    local removed_belt_tier = BeltlikesUtils.get_beltlike_tier(removed_beltlike.name)
+    local removed_belt_direction = removed_beltlike.direction
+
+    if removed_beltlike.type == "underground-belt" then
+      if removed_beltlike.belt_to_ground_type == "input" then
+        if removed_beltlike.neighbours then
+          local backward_jumps = {}
+          local potential_pair = BeltlikesUtils.find_potential_underground_belt_pair(removed_beltlike.neighbours, removed_belt_tier, removed_beltlike)
+          if potential_pair and potential_pair.valid and not potential_pair.neighbours then
+            backward_jumps[removed_beltlike.neighbours.unit_number] = potential_pair
+          end
+
+          DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_action_tick = ticks_played
+          table.insert(DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions_beltlikes_unit_numbers, removed_beltlike.neighbours.unit_number)
+          DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions[removed_beltlike.neighbours.unit_number] = {
+            beltlike = removed_beltlike.neighbours,
+            backward_jumps = backward_jumps,
+            player_index = player_index,
+          }
+        end
+        local input_neighbour_in_line = BeltlikesUtils.select_from_neighbours_input_neighbour_in_line(removed_belt_direction, removed_belt_tier, removed_beltlike.belt_neighbours)
+        if input_neighbour_in_line then
+          DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_action_tick = ticks_played
+          table.insert(DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions_beltlikes_unit_numbers, input_neighbour_in_line.unit_number)
+          DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions[input_neighbour_in_line.unit_number] = {
+            beltlike = input_neighbour_in_line,
+            traverse_backward_only = true,
+            player_index = player_index,
+          }
+        end
+      else
+        if removed_beltlike.neighbours then
+          local forward_jumps = {}
+          local potential_pair = BeltlikesUtils.find_potential_underground_belt_pair(removed_beltlike.neighbours, removed_belt_tier, removed_beltlike)
+          if potential_pair and potential_pair.valid and not potential_pair.neighbours then
+            forward_jumps[removed_beltlike.neighbours.unit_number] = potential_pair
+          end
+
+          DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_action_tick = ticks_played
+          table.insert(DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions_beltlikes_unit_numbers, removed_beltlike.neighbours.unit_number)
+          DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions[removed_beltlike.neighbours.unit_number] = {
+            beltlike = removed_beltlike.neighbours,
+            forward_jumps = forward_jumps,
+            player_index = player_index,
+          }
+        end
+        local output_neighbour_in_line = BeltlikesUtils.select_from_neighbours_output_neighbour_in_line(removed_belt_direction, removed_belt_tier, removed_beltlike.belt_neighbours)
+        if output_neighbour_in_line then
+          DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_action_tick = ticks_played
+          table.insert(DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions_beltlikes_unit_numbers, output_neighbour_in_line.unit_number)
+          DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions[output_neighbour_in_line.unit_number] = {
+            beltlike = output_neighbour_in_line,
+            traverse_forward_only = true,
+            player_index = player_index,
+          }
+        end
+      end
+    elseif removed_beltlike.type == "transport-belt" then
+      local input_neighbour_in_line = BeltlikesUtils.select_from_neighbours_input_neighbour_in_line(removed_belt_direction, removed_belt_tier, removed_beltlike.belt_neighbours)
+      if input_neighbour_in_line then
+        DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_action_tick = ticks_played
+        table.insert(DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions_beltlikes_unit_numbers, input_neighbour_in_line.unit_number)
+        DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions[input_neighbour_in_line.unit_number] = {
+          beltlike = input_neighbour_in_line,
+          traverse_backward_only = true,
+          player_index = player_index,
+        }
+      end
+      local output_neighbour_in_line = BeltlikesUtils.select_from_neighbours_output_neighbour_in_line(removed_belt_direction, removed_belt_tier, removed_beltlike.belt_neighbours)
+      if output_neighbour_in_line then
+        DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_action_tick = ticks_played
+        table.insert(DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions_beltlikes_unit_numbers, output_neighbour_in_line.unit_number)
+        DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions[output_neighbour_in_line.unit_number] = {
+          beltlike = output_neighbour_in_line,
+          player_index = player_index,
+        }
+      end
+    elseif removed_beltlike.type == "splitter" then
+      local added_beltlikes = {}
+      local belt_neighbours = removed_beltlike.belt_neighbours
+      local inputs_count = #belt_neighbours.inputs
+      for _, input in ipairs(belt_neighbours.inputs) do
+        if input and input.valid then
+          if not added_beltlikes[input.unit_number] 
+            and BeltlikesUtils.is_beltlike_in_line_with_input_neighbour(removed_belt_direction, removed_belt_tier, inputs_count, input) 
+          then
+            added_beltlikes[input.unit_number] = true
+
+            DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_action_tick = ticks_played
+            table.insert(DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions_beltlikes_unit_numbers, input.unit_number)
+            DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions[input.unit_number] = {
+              beltlike = input,
+              traverse_backward_only = true,
+              player_index = player_index,
+            }
+          end
+        end
+      end
+
+      for _, output in ipairs(belt_neighbours.outputs) do
+        if output and output.valid then
+          if not added_beltlikes[output.unit_number] 
+            and BeltlikesUtils.is_beltlike_in_line_with_output_neighbour(removed_belt_direction, removed_belt_tier, output) 
+          then
+            added_beltlikes[output.unit_number] = true
+
+            DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_action_tick = ticks_played
+            table.insert(DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions_beltlikes_unit_numbers, output.unit_number)
+            DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions[output.unit_number] = {
+              beltlike = output,
+              traverse_forward_only = true,
+              player_index = player_index,
+            }
+          end
+        end
+      end
+    end
+
+    local removed_beltlike_belt_neighbours = removed_beltlike.belt_neighbours
+    if removed_beltlike_belt_neighbours and #removed_beltlike_belt_neighbours.outputs > 0 then
+      for _, output_belt_neighbour in ipairs(removed_beltlike_belt_neighbours.outputs) do
+        if output_belt_neighbour and output_belt_neighbour.valid then
+          DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_action_tick = ticks_played
+          table.insert(DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions_beltlikes_unit_numbers, output_belt_neighbour.unit_number)
+          DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions[output_belt_neighbour.unit_number] = {
+            beltlike = output_belt_neighbour,
+            player_index = player_index,
+          }
+        end
+      end
+    end
+  else
+    local beltlikes_around_removed_beltlike = removed_beltlike.surface.find_entities_filtered{
+      position = removed_beltlike.position,
+      radius = 1.4,
+      type = beltlikes_types,
+      to_be_deconstructed = false
+    }
+    local removed_beltlike_is_straight = BeltlikesUtils.is_straight_beltlike_using_adjacent_beltlikes(removed_beltlike, beltlikes_around_removed_beltlike)
+    for _, beltlike_around in ipairs(beltlikes_around_removed_beltlike) do
+      if beltlike_around.valid and beltlike_around.unit_number then
+        if not removed_beltlike_is_straight or beltlike_around.direction == removed_beltlike.direction then
+          DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_action_tick = ticks_played
+          table.insert(DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions_beltlikes_unit_numbers, beltlike_around.unit_number)
+          DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions[beltlike_around.unit_number] = {
+            beltlike = beltlike_around,
+            player_index = player_index,
+          }
+        end
+      end
+    end
+  end
+end
+
+--- @param electric_pole LuaEntity Electric pole
+--- @param player_index? number Optional player index in which context is being resolved
+function DisasterCoreBelts.handle_electric_pole_built(electric_pole, player_index)
+  if not electric_pole or not electric_pole.valid or not electric_pole.unit_number then
     return
   end
   
-  -- Remove from cache (if it was cached)
-  DisasterCoreBelts.unregister_belt_engine(belt_unit_number)
-  
-  local removed_belt_tier = DisasterCoreBelts.get_beltlike_tier(removed_beltlike.name)
-  local removed_belt_direction = removed_beltlike.direction
+  local electric_pole_position = electric_pole.position
+  local electric_pole_supply_area_distance = electric_pole.prototype.get_supply_area_distance(electric_pole.quality)
+  local belt_engines = electric_pole.surface.find_entities_filtered{
+    area = {
+      left_top = {
+        x = electric_pole_position.x - electric_pole_supply_area_distance,
+        y = electric_pole_position.y - electric_pole_supply_area_distance,
+      },
+      right_bottom = {
+        x = electric_pole_position.x + electric_pole_supply_area_distance,
+        y = electric_pole_position.y + electric_pole_supply_area_distance,
+      },
+    },
+    name = belt_engines_names,
+  }
 
-  -- Collect all connected belts that form belt line (from inputs and outputs)
-  local connected_belts = {}
-  
-  if removed_beltlike.type == "underground-belt" then
-    if removed_beltlike.belt_to_ground_type == "input" then
-      if removed_beltlike.neighbours then
-        local backward_jumps = {}
-        local potential_pair = DisasterCoreBelts.find_potential_underground_belt_pair(removed_beltlike.neighbours, removed_belt_tier, removed_beltlike)
-        if potential_pair then
-          backward_jumps[removed_beltlike.neighbours.unit_number] = potential_pair
-        end
-        table.insert(connected_belts, {belt = removed_beltlike.neighbours, backward_jumps = backward_jumps})
-      end
-      local input_neighbour_in_line = DisasterCoreBelts.select_from_neighbours_input_neighbour_in_line(removed_belt_direction, removed_belt_tier, removed_beltlike.belt_neighbours)
-      if input_neighbour_in_line then
-        table.insert(connected_belts, {belt = input_neighbour_in_line, traverse_backward_only = true})
-      end
-    else
-      if removed_beltlike.neighbours then
-        local forward_jumps = {}
-        local potential_pair = DisasterCoreBelts.find_potential_underground_belt_pair(removed_beltlike.neighbours, removed_belt_tier, removed_beltlike)
-        if potential_pair then
-          forward_jumps[removed_beltlike.neighbours.unit_number] = potential_pair
-        end
-        table.insert(connected_belts, {belt = removed_beltlike.neighbours, forward_jumps = forward_jumps})
-      end
-      local output_neighbour_in_line = DisasterCoreBelts.select_from_neighbours_output_neighbour_in_line(removed_belt_direction, removed_belt_tier, removed_beltlike.belt_neighbours)
-      if output_neighbour_in_line then
-        table.insert(connected_belts, {belt = output_neighbour_in_line, traverse_forward_only = true})
-      end
-    end
-  elseif removed_beltlike.type == "transport-belt" then
-    local input_neighbour_in_line = DisasterCoreBelts.select_from_neighbours_input_neighbour_in_line(removed_belt_direction, removed_belt_tier, removed_beltlike.belt_neighbours)
-    if input_neighbour_in_line then
-      table.insert(connected_belts, { belt = input_neighbour_in_line, traverse_backward_only = true})
-    end
-    local output_neighbour_in_line = DisasterCoreBelts.select_from_neighbours_output_neighbour_in_line(removed_belt_direction, removed_belt_tier, removed_beltlike.belt_neighbours)
-    if output_neighbour_in_line then
-      table.insert(connected_belts, { belt = output_neighbour_in_line })
-    end
-  elseif removed_beltlike.type == "splitter" then
-    local added_beltlikes = {}
-    local belt_neighbours = removed_beltlike.belt_neighbours
-    local inputs_count = #belt_neighbours.inputs
-    for _, input in ipairs(belt_neighbours.inputs) do
-      if input and input.valid then
-        if not added_beltlikes[input.unit_number] 
-          and DisasterCoreBelts.is_beltlike_in_line_with_input_neighbour(removed_belt_direction, removed_belt_tier, inputs_count, input) 
-        then
-          table.insert(connected_belts, {belt = input, traverse_backward_only = true})
-          added_beltlikes[input.unit_number] = true
-        end
-      end
-    end
-
-    for _, output in ipairs(belt_neighbours.outputs) do
-      if output and output.valid then
-        if not added_beltlikes[output.unit_number] 
-          and DisasterCoreBelts.is_beltlike_in_line_with_output_neighbour(removed_belt_direction, removed_belt_tier, output) 
-        then
-          table.insert(connected_belts, {belt = output, traverse_forward_only = true})
-          added_beltlikes[output.unit_number] = true
-        end
+  for _, belt_engine in ipairs(belt_engines) do
+    if belt_engine.valid and belt_engine.unit_number then
+      local belt_engine_cache_record = DisasterCoreBelts.belt_engines_cache[belt_engine.unit_number]
+      if belt_engine_cache_record then
+        DisasterCoreBelts.pending_revaluate_belt_engines_actions[belt_engine.unit_number] = {
+          belt_engine_cache_record = belt_engine_cache_record,
+          player_index = player_index,
+        }
       end
     end
   end
+end
 
-  DisasterCoreBelts.pending_beltlike_removal_process_action = {
-    belt_name = removed_beltlike.name,
-    belt_type = removed_beltlike.type,
-    belt_pos = removed_beltlike.position,
-    belt_direction = removed_beltlike.direction,
-    belt_tier = removed_belt_tier,
-    connected_belts = connected_belts,
-    player_index = player_index
-  }
+--- @param player LuaPlayer Player
+function DisasterCoreBelts.handle_blueprint_setup(player)
+  local blueprint_item_stack = player.blueprint_to_setup
+  if not blueprint_item_stack or not blueprint_item_stack.valid or not blueprint_item_stack.valid_for_read then
+    blueprint_item_stack = player.cursor_stack
+  end
+
+  if not blueprint_item_stack
+    or not blueprint_item_stack.valid
+    or not blueprint_item_stack.valid_for_read
+    or not blueprint_item_stack.is_blueprint
+  then
+    return
+  end
+
+  local beltlikes_speeds_count = Beltlike.beltlikes_speeds_count
+  local beltlikes_to_speeds_beltlikes_mapping = Beltlike.beltlikes_to_speeds_beltlikes_mapping
+  local blueprint_entities = blueprint_item_stack.get_blueprint_entities()
+  if not blueprint_entities then
+    return
+  end
+
+  for _, blueprint_entity in ipairs(blueprint_entities) do
+    local beltlike_speeds_beltlikes = beltlikes_to_speeds_beltlikes_mapping[blueprint_entity.name]
+    if beltlike_speeds_beltlikes then
+      blueprint_entity.name = beltlike_speeds_beltlikes[beltlikes_speeds_count]
+    end
+  end
+
+  blueprint_item_stack.set_blueprint_entities(blueprint_entities)
 end
 
 function DisasterCoreBelts.restore_belt_engine_mappings()
@@ -2207,7 +2092,7 @@ end
 
 local DisasterCoreBelts_API = {}
 
----@overload fun(event:("on_beltlikes_section_updated"), handler:fun(event:{ surface: LuaSurface, resolve_start_position: MapPosition, section_info: BeltSectionInfo, section_active: boolean, required_power: number, combined_power: number, player_index?: number }))
+---@overload fun(event:("on_beltlikes_section_updated"), handler:fun(event:{ surface: LuaSurface, resolve_start_position: MapPosition, section_info: BeltSectionInfo, section_active: boolean, required_power: number, combined_power: number, speed_index: number, player_index?: number }))
 ---@overload fun(event:("on_beltlikes_section_resolved"), handler:fun(event:{ start_beltlike: LuaEntity, section_info: BeltSectionInfo }))
 function DisasterCoreBelts_API.on_event(event, handler)
   DisasterCoreBelts.events_handlers[event] = handler
@@ -2218,6 +2103,7 @@ end
 ------------------------------------------------------------
 
 function DisasterCoreBelts_API.on_init()
+  Beltlike.init_control_stage()
   DisasterCoreBelts.mappings_restored = true
 
   if game.tick > 100 then
@@ -2236,6 +2122,7 @@ function DisasterCoreBelts_API.on_init()
 end
 
 function DisasterCoreBelts_API.on_load()
+  Beltlike.init_control_stage()
   DisasterCoreBelts.mappings_restored = false
 end
 
@@ -2251,18 +2138,26 @@ function DisasterCoreBelts_API.on_configuration_changed(data)
     storage.mod_version = this_mod_changes.old_version or this_mod_changes.new_version
   end
 
+  if helpers.compare_versions(this_mod_changes.new_version, this_mod_changes.old_version) > 0 then
+    DisasterCoreBelts.revaluate_beltlikes(nil)
+  end
+
   --- Future migrations will be handled here
 
   storage.mod_version = this_mod_changes.new_version
 end
 
---- @param event EventData.on_tick
+--- @param event NthTickEventData
 function DisasterCoreBelts_API.on_tick(event)
   DisasterCoreBelts.restore_belt_engine_mappings()
   DisasterCoreBelts.do_revaluate_beltlikes_action_processing(event.tick)
+
   DisasterCoreBelts.resolve_pending_belt_engine_built_actions(event.tick)
-  DisasterCoreBelts.resolve_pending_beltlike_removal_process_action()
-  DisasterCoreBelts.do_belt_engines_cycle_processing_tick()
+  DisasterCoreBelts.resolve_pending_revaluate_belt_engines_actions()
+  -- Always calling last, because other actions can add new actions to the list
+  DisasterCoreBelts.resolve_pending_beltlikes_sections_resolve_and_update_actions(event.tick)
+  
+  DisasterCoreBelts.do_belt_engines_processing_window_cycle()
 end
 
 --- @param event EventData.on_built_entity
@@ -2281,6 +2176,12 @@ function DisasterCoreBelts_API.on_built_entity(event)
   -- Handle beltlike placement
   if beltlikes_types_set[entity.type] then
     DisasterCoreBelts.handle_beltlike_built(entity, event.player_index)
+    return
+  end
+
+  if entity.type == "electric-pole" then
+    DisasterCoreBelts.handle_electric_pole_built(entity, event.player_index)
+    return
   end
 end
 
@@ -2306,21 +2207,21 @@ end
 --- @param event EventData.on_player_mined_entity
 function DisasterCoreBelts_API.on_player_mined_entity(event)
   local entity = event.entity
-  if not entity.valid then
+  if not entity.valid or entity.to_be_deconstructed() then
     return
   end
 
   if DisasterCoreBelts.is_belt_engine(entity) then
     DisasterCoreBelts.handle_belt_engine_removed(entity, event.player_index)
   elseif beltlikes_types_set[entity.type] then
-    DisasterCoreBelts.handle_beltlike_removed(entity, event.player_index)
+    DisasterCoreBelts.handle_beltlike_removed(entity, event.player_index, true)
   end
 end
 
 --- @param event EventData.on_robot_mined_entity
 function DisasterCoreBelts_API.on_robot_mined_entity(event)
   local entity = event.entity
-  if not entity.valid then
+  if not entity.valid or entity.to_be_deconstructed() then
     return
   end
 
@@ -2353,6 +2254,219 @@ function DisasterCoreBelts_API.on_player_flipped_entity(event)
   
   if beltlikes_types_set[entity.type] then
     DisasterCoreBelts.handle_beltlike_rotated(entity, event.player_index)
+  end
+end
+
+--- @param event EventData.on_player_setup_blueprint
+function DisasterCoreBelts_API.on_player_setup_blueprint(event)
+  local player = game.players[event.player_index]
+  if not player or not player.valid then
+    return
+  end
+
+  DisasterCoreBelts.handle_blueprint_setup(player)
+end
+
+--- @param event EventData.on_player_deconstructed_area
+function DisasterCoreBelts_API.on_player_deconstructed_area(event)
+  local area = event.area
+  if not event.surface.valid then
+    return
+  end
+  
+  local ticks_played = game.ticks_played
+  DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_action_tick = ticks_played
+
+  local search_area_top_left_x = math.floor(area.left_top.x) - 0.2
+  local search_area_top_left_y = math.floor(area.left_top.y) - 0.2
+  local search_area_bottom_right_x = math.ceil(area.right_bottom.x) + 0.2
+  local search_area_bottom_right_y = math.ceil(area.right_bottom.y) + 0.2
+  rendering.draw_rectangle{
+    color = {r = 1, g = 0, b = 0, a = 0.5},
+    surface = event.surface,
+    left_top = {
+      x = search_area_top_left_x,
+      y = search_area_top_left_y,
+    },
+    right_bottom = {
+      x = search_area_bottom_right_x,
+      y = search_area_bottom_right_y,
+    },
+  }
+
+  local min_outside_x = search_area_top_left_x
+  local min_outside_y = search_area_top_left_y
+  local max_outside_x = search_area_bottom_right_x
+  local max_outside_y = search_area_bottom_right_y
+
+  local searched_entities_types = {}
+  for _, entity_type in ipairs(beltlikes_types) do
+    table.insert(searched_entities_types, entity_type)
+  end
+  
+  local belt_engines = event.surface.find_entities_filtered{
+    name = belt_engines_names, 
+    area = {
+      left_top = {
+        x = search_area_top_left_x,
+        y = search_area_top_left_y,
+      },
+      right_bottom = {
+        x = search_area_bottom_right_x,
+        y = search_area_bottom_right_y,
+      },
+    }
+  }
+  for _, belt_engine in ipairs(belt_engines) do
+    if belt_engine.valid and belt_engine.to_be_deconstructed() then
+      DisasterCoreBelts.handle_belt_engine_removed(belt_engine, event.player_index)
+    end
+  end
+
+  local beltlikes = event.surface.find_entities_filtered{type = beltlikes_types, area = {
+    left_top = {
+      x = search_area_top_left_x,
+      y = search_area_top_left_y,
+    },
+    right_bottom = {
+      x = search_area_bottom_right_x,
+      y = search_area_bottom_right_y,
+    },
+  }}
+  for _, beltlike in ipairs(beltlikes) do
+    if beltlike.valid and beltlike.unit_number then
+      local marked_for_deconstruction = beltlike.to_be_deconstructed()
+
+      if marked_for_deconstruction then
+        DisasterCoreBelts.unregister_belt_engine(beltlike.unit_number)
+
+        if beltlike.type == "underground-belt" then
+          local beltlike_position = beltlike.position
+          if beltlike_position.x > search_area_top_left_x
+            and beltlike_position.x < search_area_bottom_right_x
+            and beltlike_position.y > search_area_top_left_y
+            and beltlike_position.y < search_area_bottom_right_y
+          then
+            local direction = beltlike.belt_to_ground_type == "input" 
+              and beltlike.direction
+              or opposite_directions_map[beltlike.direction]
+            local direction_vector = directions_vectors_map[direction]
+            local max_underground_distance = beltlike.prototype.max_underground_distance
+            min_outside_x = math.min(min_outside_x, beltlike_position.x + direction_vector[1] * max_underground_distance)
+            min_outside_y = math.min(min_outside_y, beltlike_position.y + direction_vector[2] * max_underground_distance)
+            max_outside_x = math.max(max_outside_x, beltlike_position.x + direction_vector[1] * max_underground_distance)
+            max_outside_y = math.max(max_outside_y, beltlike_position.y + direction_vector[2] * max_underground_distance)
+          end
+        end
+      else
+        table.insert(DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions_beltlikes_unit_numbers, beltlike.unit_number)
+        DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions[beltlike.unit_number] = {
+          beltlike = beltlike,
+          player_index = event.player_index,
+        }
+      end
+    end
+  end
+
+  local outside_areas = {}
+
+  local top_outside_area_left_top_y = math.min(search_area_top_left_y, min_outside_y)
+  local top_outside_area_right_bottom_y = search_area_top_left_y - 1.0
+  if top_outside_area_left_top_y < top_outside_area_right_bottom_y then
+    table.insert(outside_areas, {
+      left_top = {
+        x = search_area_top_left_x + 0.6,
+        y = top_outside_area_left_top_y,
+      },
+      right_bottom = {
+        x = search_area_bottom_right_x - 0.6,
+        y = top_outside_area_right_bottom_y,
+      },
+    })
+  end
+
+  local right_outside_area_left_top_x = search_area_bottom_right_x + 1.0
+  local right_outside_area_right_bottom_x = math.max(search_area_bottom_right_x, max_outside_x)
+  if right_outside_area_left_top_x < right_outside_area_right_bottom_x then
+    table.insert(outside_areas, {
+      left_top = {
+        x = right_outside_area_left_top_x,
+        y = search_area_top_left_y + 0.6,
+      },
+      right_bottom = {
+        x = right_outside_area_right_bottom_x,
+        y = search_area_bottom_right_y - 0.6,
+      },
+    })
+  end
+
+  local bottom_outside_area_left_top_y = search_area_bottom_right_y + 1.0
+  local bottom_outside_area_right_bottom_y = math.max(search_area_bottom_right_y, max_outside_y)
+  if bottom_outside_area_left_top_y < bottom_outside_area_right_bottom_y then
+    table.insert(outside_areas, {
+      left_top = {
+        x = search_area_top_left_x + 0.6,
+        y = bottom_outside_area_left_top_y,
+      },
+      right_bottom = {
+        x = search_area_bottom_right_x - 0.6,
+        y = bottom_outside_area_right_bottom_y,
+      },
+    })
+  end
+
+  local left_outside_area_left_top_x = math.min(search_area_top_left_x, min_outside_x)
+  local left_outside_area_right_bottom_x = search_area_top_left_x - 1.0
+  if left_outside_area_left_top_x < left_outside_area_right_bottom_x then
+    table.insert(outside_areas, {
+      left_top = {
+        x = left_outside_area_left_top_x,
+        y = search_area_top_left_y + 0.6,
+      },
+      right_bottom = {
+        x = left_outside_area_right_bottom_x,
+        y = search_area_bottom_right_y - 0.6,
+      },
+    })
+  end
+
+  for _, outside_area in ipairs(outside_areas) do
+    rendering.draw_rectangle{
+      color = {r = 0, g = 0, b = 1, a = 0.5},
+      surface = event.surface,
+      left_top = outside_area.left_top,
+      right_bottom = outside_area.right_bottom,
+    }
+
+    local outside_underground_belts = event.surface.find_entities_filtered{
+      type = "underground-belt",
+      area = outside_area,
+      to_be_deconstructed = false,
+    }
+    for _, outside_underground_belt in ipairs(outside_underground_belts) do
+      if outside_underground_belt.valid and outside_underground_belt.unit_number and not outside_underground_belt.neighbours then
+        --- Add action to resolve beltlike section
+        table.insert(DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions_beltlikes_unit_numbers, outside_underground_belt.unit_number)
+        DisasterCoreBelts.pending_beltlikes_sections_resolve_and_update_actions[outside_underground_belt.unit_number] = {
+          beltlike = outside_underground_belt,
+          player_index = event.player_index,
+        }
+      end
+    end
+  end
+end
+
+--- @param event EventData.on_cancelled_deconstruction
+function DisasterCoreBelts_API.on_cancelled_deconstruction(event)
+  local entity = event.entity
+  if not entity.valid then
+    return
+  end
+
+  if DisasterCoreBelts.is_belt_engine(entity) then
+    DisasterCoreBelts.handle_belt_engine_built(entity, event.player_index)
+  elseif beltlikes_types_set[entity.type] then
+    DisasterCoreBelts.handle_beltlike_built(entity, event.player_index)
   end
 end
 
