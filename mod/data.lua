@@ -91,38 +91,3 @@ DataUtils.create_belt_engine{
   },
   enabled = false
 }
-
-------------------------------------------------------------
---- Technologies
-------------------------------------------------------------
-
-DataUtils.integrate_section_divider_belts_to_technologies()
-
-local logistics_technology = data.raw["technology"]["logistics"]
-logistics_technology.prerequisites = { "steam-power", "electronics" }
-logistics_technology.research_trigger = {
-  type = "craft-item",
-  item = "transport-belt",
-  count = 10
-}
-DataUtils.add_section_divider_belts_for_base_to_technology_effects(logistics_technology.effects, "transport-belt")
-table.insert(logistics_technology.effects, {
-  type = "unlock-recipe",
-  recipe = BeltEngine.belt_engines_names[1]
-})
-data:extend({ logistics_technology })
-
-local logistics_2_technology = data.raw["technology"]["logistics-2"]
-table.insert(logistics_2_technology.prerequisites, "steel-processing")
-table.insert(logistics_2_technology.effects, {
-  type = "unlock-recipe",
-  recipe = BeltEngine.belt_engines_names[2]
-})
-data:extend({ logistics_2_technology })
-
-local logistics_3_technology = data.raw["technology"]["logistics-3"]
-table.insert(logistics_3_technology.effects, {
-  type = "unlock-recipe",
-  recipe = BeltEngine.belt_engines_names[3]
-})
-data:extend({ logistics_3_technology })

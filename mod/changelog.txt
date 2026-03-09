@@ -1,10 +1,17 @@
 ---------------------------------------------------------------------------------------------------
+Version: 1.1.2
+Date: 2026-03-09
+  Compatibility:
+    - Added compatibility with AAI Industry mod. Belt engines and section dividers integration to technology tree is inline with AAI Industry mod.
+
+---------------------------------------------------------------------------------------------------
 Version: 1.1.1
 Date: 2026-03-09
   Bugfixes:
     - Fix for section resolve when the mod incorrectly identified the previous shape of the output belt of the newly built belt
     - Fix for incorrect comparison of versions when migrating from version from versions before 1.1.0 that were leading to re-evaluation of beltlikes on save load (not affecting integrity of the save)
     - Fix for crash on existing save when mod tried to do migration and old_version was not present
+
 ---------------------------------------------------------------------------------------------------
 Version: 1.1.0
 Date: 2026-03-09
