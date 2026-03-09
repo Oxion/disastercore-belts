@@ -1465,8 +1465,8 @@ function DisasterCoreBelts.handle_beltlike_built(beltlike, player_index)
   local beltlike_belt_neighbours = actual_beltlike.belt_neighbours
   if beltlike_belt_neighbours.outputs and #beltlike_belt_neighbours.outputs > 0 then
     for _, beltlike_output_belt_neighbour in ipairs(beltlike_belt_neighbours.outputs) do
-      if beltlike_output_belt_neighbour and beltlike_output_belt_neighbour.valid then
-        if BeltlikesUtils.is_will_be_or_was_turn_belt(beltlike_output_belt_neighbour) and beltlike_output_belt_neighbour.unit_number then
+      if beltlike_output_belt_neighbour and beltlike_output_belt_neighbour.valid and beltlike_output_belt_neighbour.unit_number then
+        if BeltlikesUtils.is_was_turn_belt(beltlike_output_belt_neighbour, beltlike_unit_number) then
           local beltlike_output_belt_neighbour_tier = BeltlikesUtils.get_beltlike_tier(beltlike_output_belt_neighbour.name)
           local beltlike_output_belt_neighbour_direction = beltlike_output_belt_neighbour.direction
           for _, input_belt_neighbour in ipairs(beltlike_output_belt_neighbour.belt_neighbours.inputs) do
@@ -2138,7 +2138,7 @@ function DisasterCoreBelts_API.on_configuration_changed(data)
     storage.mod_version = this_mod_changes.old_version or this_mod_changes.new_version
   end
 
-  if helpers.compare_versions(this_mod_changes.new_version, this_mod_changes.old_version) > 0 then
+  if helpers.compare_versions(storage.mod_version, "1.1.0") < 0 then
     DisasterCoreBelts.revaluate_beltlikes(nil)
   end
 

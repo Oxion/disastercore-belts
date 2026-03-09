@@ -341,11 +341,11 @@ function BeltlikesUtils.is_turn_belt(belt)
   return false
 end
 
---- Checks if a beltlike entity will be or was a turn belt on input neighbour change.
+--- Checks if a beltlike entity was a turn belt on input neighbour change.
 --- @param belt LuaEntity Beltlike entity to check
 --- @param changed_input_neighbour_unit_number number? input neighbour unit number attached or removed
---- @return boolean true if the beltlike entity will be or was a turn belt on input neighbour change, false otherwise
-function BeltlikesUtils.is_will_be_or_was_turn_belt(belt, changed_input_neighbour_unit_number)
+--- @return boolean true if the beltlike entity was a turn belt on input neighbour change, false otherwise
+function BeltlikesUtils.is_was_turn_belt(belt, changed_input_neighbour_unit_number)
   local belt_neighbours_inputs = belt.belt_neighbours.inputs
   local belt_neighbours_inputs_count = #belt_neighbours_inputs
   if belt_neighbours_inputs_count == 2 then
@@ -353,11 +353,12 @@ function BeltlikesUtils.is_will_be_or_was_turn_belt(belt, changed_input_neighbou
     for _, input_neighbour in ipairs(belt_neighbours_inputs) do
       if input_neighbour.valid
         and input_neighbour.unit_number ~= changed_input_neighbour_unit_number
-        and input_neighbour.direction ~= belt_direction
+        and input_neighbour.direction == belt_direction
       then
-        return true
+        return false
       end
     end
+    return true
   end
 
   return false
