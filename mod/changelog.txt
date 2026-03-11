@@ -1,4 +1,12 @@
 ---------------------------------------------------------------------------------------------------
+Version: 1.2.1
+Date: 2026-03-11
+  Bugfixes:
+    - Preventing duplicate addition of prerequisite to technologies
+  Compatibility:
+    - Added Krastorio2 as optional dependency to ensure compatibility
+
+---------------------------------------------------------------------------------------------------
 Version: 1.2.0
 Date: 2026-03-11
   Changes:
@@ -15,6 +23,7 @@ Date: 2026-03-11
     - Added compatibility with Dredgeworks mod.
     - With new compatibility system, now compatible with Castra mod.
     - Added compatibility with Cargo Crates mod.
+
 ---------------------------------------------------------------------------------------------------
 Version: 1.1.2
 Date: 2026-03-09

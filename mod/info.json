@@ -1,6 +1,6 @@
 {
   "name": "disastercore-belts",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "title": "Disaster Core Belts",
   "author": "Oxion",
   "description": "Introduces belt engines which consume energy to move connected belts",
@@ -15,7 +15,8 @@
     "? planetaris-arig >= 1.1.15",
     "? planetaris-hyarion >=1.2.5",
     "? planetaris-tellus >= 1.0.2",
-    "? dredgeworks >= 0.8.15"
+    "? dredgeworks >= 0.8.15",
+    "? Krastorio2 >= 2.0.15"
   ],
   "license": "Custom - see LICENSE file. Personal use & modification allowed; permission required for use in other mods/compilations; attribution required."
 }

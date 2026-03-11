@@ -1,4 +1,5 @@
 local ModName = require("mod-name")
+local Utils = require("scripts.utils")
 local DataUtils = require("scripts.data_utils")
 local BeltEngine = require("scripts.belt_engine")
 local DataFinalFixesStage = require("scripts.data.final_fixes_stage")
@@ -120,7 +121,9 @@ end
 local logistics_2_technology = data.raw["technology"]["logistics-2"]
 if logistics_2_technology then
   if not DataFinalFixesStage.skip_default_logistic_2_technology_prerequisites_update then
-    table.insert(logistics_2_technology.prerequisites, "steel-processing")
+    if not Utils.index_of(logistics_2_technology.prerequisites, "steel-processing") then
+      table.insert(logistics_2_technology.prerequisites, "steel-processing")
+    end
   end
   if not DataFinalFixesStage.skip_default_logistic_2_technology_effects_update then
     table.insert(logistics_2_technology.effects, {
