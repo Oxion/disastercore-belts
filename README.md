@@ -3,6 +3,7 @@
 </div>
 
 # Disaster Core Belts
+[Mod portal page](https://mods.factorio.com/mod/disastercore-belts)
 
 Factorio 2.0 mod that introduces belt engines which consume energy to move connected belts
 
