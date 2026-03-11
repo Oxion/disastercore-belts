@@ -1,6 +1,27 @@
+-- Initialize globals
+require("scripts.data.globals")
+
 local ModName = require("mod-name")
+local CompatibilityDataStartStage = require("compatibility.compatibility_data_start_stage")
 local DataUtils = require("scripts.data_utils")
 local BeltEngine = require("scripts.belt_engine")
+
+--------------------------------
+-- Compatibility data start stage
+--------------------------------
+
+CompatibilityDataStartStage.apply()
+
+--------------------------------
+-- Mod data
+--------------------------------
+
+data:extend({
+  {
+    name = ModName,
+    type = 'mod-data',
+  }
+})
 
 ------------------------------------------------------------
 --- Item subgroups
@@ -10,31 +31,20 @@ local BeltEngine = require("scripts.belt_engine")
 data:extend({
   {
     type = "item-subgroup",
-    name = "belt-accessories",
+    name = "belt-engines",
     group = "logistics",
-    order = "b[belt-accessories]"
+    order = "b-a[belt-engines]"
   }
 })
 
-------------------------------------------------------------
---- Beltlikes
-------------------------------------------------------------
-
-DataUtils.extend_beltlikes()
-
-------------------------------------------------------------
---- Section-dividers belts
-------------------------------------------------------------
-
-DataUtils.create_section_divider_belts{
-  subgroup = "belt-accessories",
-}
-
-------------------------------------------------------------
---- Reduced-speed beltlikes
-------------------------------------------------------------
-
-DataUtils.create_reduced_speed_beltlikes()
+data:extend({
+  {
+    type = "item-subgroup",
+    name = "belt-accessories",
+    group = "logistics",
+    order = "b-b[belt-accessories]"
+  }
+})
 
 ------------------------------------------------------------
 --- Belt engines
@@ -53,7 +63,7 @@ DataUtils.create_belt_engine{
   dummy_recipe_name = BELT_ENGINE_DUMMY_RECIPE_NAME,
   next_upgrade = BeltEngine.belt_engines_names[2],
   order = "d[" .. BeltEngine.belt_engines_names[1] .. "]",
-  subgroup = "belt-accessories",
+  subgroup = "belt-engines",
   recipe_category = "crafting",
   recipe_ingredients = {
     {type = "item", name = "iron-plate", amount = 5},
@@ -68,7 +78,7 @@ DataUtils.create_belt_engine{
   dummy_recipe_name = BELT_ENGINE_DUMMY_RECIPE_NAME,
   next_upgrade = BeltEngine.belt_engines_names[3],
   order = "e[" .. BeltEngine.belt_engines_names[2] .. "]",
-  subgroup = "belt-accessories",
+  subgroup = "belt-engines",
   recipe_category = "crafting",
   recipe_ingredients = {
     {type = "item", name = "belt-engine", amount = 1},
@@ -82,7 +92,7 @@ DataUtils.create_belt_engine{
   name = BeltEngine.belt_engines_names[3],
   dummy_recipe_name = BELT_ENGINE_DUMMY_RECIPE_NAME,
   order = "f[" .. BeltEngine.belt_engines_names[3] .. "]",
-  subgroup = "belt-accessories",
+  subgroup = "belt-engines",
   recipe_category = "crafting-with-fluid",
   recipe_ingredients = {
     {type = "item", name = "brushless-belt-engine", amount = 1},

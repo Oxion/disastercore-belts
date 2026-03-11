@@ -1,7 +1,7 @@
 local ModName = require("mod-name")
 local beltlikes_types_to_effective_units_mapping = require("beltlikes_types_to_effective_units_mapping")
+local beltlikes_drive_resistances = require("beltlikes_drive_resistances")
 local beltlikes_drive_resistance_mapping = require("beltlikes_drive_resistance_mapping")
-local beltlikes_tier_mapping = require("beltlikes_tier_mapping")
 
 local belt_section_divider_prefix = "section-divider"
 
@@ -47,10 +47,12 @@ local Beltlike = {
   beltlikes_types_to_effective_units_mapping = beltlikes_types_to_effective_units_mapping,
   
   default_beltlike_drive_resistance = DEFAULT_BELTLIKE_DRIVE_RESISTANCE,
+  beltlikes_drive_resistances = beltlikes_drive_resistances,
   beltlikes_drive_resistance_mapping = beltlikes_drive_resistance_mapping,
 
   default_beltlike_tier = DEFAULT_BELTLIKE_TIER,
-  beltlikes_tier_mapping = beltlikes_tier_mapping,
+  ---@type table<string, string>
+  beltlikes_tier_mapping = {},
 
   beltlike_section_dividers_names = beltlike_section_dividers_names,
   beltlike_section_dividers_names_set = beltlike_section_dividers_names_set,
@@ -108,6 +110,20 @@ function Beltlike.is_base_reduced_speed_beltlike(beltlike_prototype_name)
   return string.sub(beltlike_prototype_name, 1, #reduced_speed_beltlike_prototype_prefix) == reduced_speed_beltlike_prototype_prefix
 end
 
+---@param beltlikes_drive_resistance_mapping_extension table<string, number>
+function Beltlike.extend_beltlikes_drive_resistance_mapping(beltlikes_drive_resistance_mapping_extension)
+  for beltlike_name, beltlike_drive_resistance in pairs(beltlikes_drive_resistance_mapping_extension) do
+    Beltlike.beltlikes_drive_resistance_mapping[beltlike_name] = beltlike_drive_resistance
+  end
+end
+
+---@param beltlikes_tier_mapping_extension table<string, string>
+function Beltlike.extend_beltlikes_tier_mapping(beltlikes_tier_mapping_extension)
+  for beltlike_name, beltlike_tier in pairs(beltlikes_tier_mapping_extension) do
+    Beltlike.beltlikes_tier_mapping[beltlike_name] = beltlike_tier
+  end
+end
+
 function Beltlike.init_control_stage()
   if Beltlike.initialized_control_stage then
     return
@@ -116,74 +132,56 @@ function Beltlike.init_control_stage()
   Beltlike.initialized_control_stage = true
 
   local beltlikes_tier_mapping = Beltlike.beltlikes_tier_mapping
-  local beltlikes_drive_resistance_mapping = Beltlike.beltlikes_drive_resistance_mapping
-  local beltlike_section_dividers_names = Beltlike.beltlike_section_dividers_names
-  local beltlike_section_dividers_names_set = Beltlike.beltlike_section_dividers_names_set
-
   local bases_beltlikes_to_speeds_beltlikes_mapping = {}
   local beltlikes_to_speeds_beltlikes_mapping = Beltlike.beltlikes_to_speeds_beltlikes_mapping
-  local reduced_speed_beltlike_prototype_prefix_length = #reduced_speed_beltlike_prototype_prefix
 
-  local belt_section_divider_prefix_length = #belt_section_divider_prefix
+  local mod_data = prototypes.mod_data[ModName]
+  if mod_data then
+    Beltlike.extend_beltlikes_drive_resistance_mapping(mod_data.data.beltlikes_drive_resistance_mapping)
+    Beltlike.extend_beltlikes_tier_mapping(mod_data.data.beltlikes_tier_mapping)
 
-  --- Searching and processing base section dividers
-  local belts_prototypes = prototypes.get_entity_filtered({{ filter = "type", type = "transport-belt" }})
-  for _, belt_prototype in pairs(belts_prototypes) do
-    local belt_prototype_name = belt_prototype.name
+    local section_dividers_belts_names_by_bases_names = mod_data.data.section_dividers_belts_names_by_bases_names
+    for base_name, section_divider_belt_name in pairs(section_dividers_belts_names_by_bases_names) do
+      table.insert(beltlike_section_dividers_names, section_divider_belt_name)
+      beltlike_section_dividers_names_set[section_divider_belt_name] = true
 
-    local beltlike_prototype_is_base_section_divider = Beltlike.is_base_section_divider(belt_prototype_name)
-    if beltlike_prototype_is_base_section_divider then
-      local section_divider_base_belt_name = string.sub(belt_prototype_name, belt_section_divider_prefix_length + 2)
-      table.insert(beltlike_section_dividers_names, belt_prototype_name)
-      beltlike_section_dividers_names_set[belt_prototype_name] = true
+      local section_divider_base_belt_drive_resistance = beltlikes_drive_resistance_mapping[base_name] or DEFAULT_BELTLIKE_DRIVE_RESISTANCE
+      beltlikes_drive_resistance_mapping[section_divider_belt_name] = section_divider_base_belt_drive_resistance
 
-      local section_divider_base_belt_tier = beltlikes_tier_mapping[section_divider_base_belt_name] or DEFAULT_BELTLIKE_TIER
-      beltlikes_tier_mapping[belt_prototype_name] = section_divider_base_belt_tier
-
-      local section_divider_base_belt_drive_resistance = beltlikes_drive_resistance_mapping[section_divider_base_belt_name] or DEFAULT_BELTLIKE_DRIVE_RESISTANCE
-      beltlikes_drive_resistance_mapping[belt_prototype_name] = section_divider_base_belt_drive_resistance
+      local section_divider_base_belt_tier = beltlikes_tier_mapping[base_name] or DEFAULT_BELTLIKE_TIER
+      beltlikes_tier_mapping[section_divider_belt_name] = section_divider_base_belt_tier
     end
-  end
 
-  --- Searching and processing beltlikes speeds prototypes
-  local beltlikes_prototypes = prototypes.get_entity_filtered({{ filter = "type", type = beltlikes_types }})
-  for _, beltlike_prototype in pairs(beltlikes_prototypes) do
-    local beltlike_prototype_name = beltlike_prototype.name
-    
-    local base_name = beltlike_prototype_name
-    local speed_index = Beltlike.beltlikes_reduced_speeds_count + 1
-
-    --- Reduced speed beltlike
-    local beltlike_prototype_is_base_reduced_speed_beltlike = Beltlike.is_base_reduced_speed_beltlike(beltlike_prototype_name)
-    if beltlike_prototype_is_base_reduced_speed_beltlike then
-      local speed_index_end_index = string.find(beltlike_prototype_name, "-", reduced_speed_beltlike_prototype_prefix_length + 2, true)
-      local speed_index_string = string.sub(beltlike_prototype_name, reduced_speed_beltlike_prototype_prefix_length + 2, speed_index_end_index - 1)
-      
-      base_name = string.sub(beltlike_prototype_name, speed_index_end_index + 1)
-      speed_index = tonumber(speed_index_string) or Beltlike.beltlikes_reduced_speeds_count + 1
-
-      local reduced_speed_beltlike_tier = beltlikes_tier_mapping[base_name] or DEFAULT_BELTLIKE_TIER
-      beltlikes_tier_mapping[beltlike_prototype_name] = reduced_speed_beltlike_tier
-
-      local reduced_speed_beltlike_drive_resistance = beltlikes_drive_resistance_mapping[base_name] or DEFAULT_BELTLIKE_DRIVE_RESISTANCE
-      beltlikes_drive_resistance_mapping[beltlike_prototype_name] = reduced_speed_beltlike_drive_resistance
-
-      local reduced_speed_beltlike_base_beltlike_is_base_section_divider = Beltlike.is_base_section_divider(base_name)
-      if reduced_speed_beltlike_base_beltlike_is_base_section_divider then
-        table.insert(beltlike_section_dividers_names, beltlike_prototype_name)
-        beltlike_section_dividers_names_set[beltlike_prototype_name] = true
+    local reduced_speed_beltlikes_names_by_bases_names = mod_data.data.reduced_speed_beltlikes_names_by_bases_names
+    for base_name, reduced_speed_beltlike_names in pairs(reduced_speed_beltlikes_names_by_bases_names) do
+      local base_beltlike_speeds_beltlikes = bases_beltlikes_to_speeds_beltlikes_mapping[base_name]
+      if not base_beltlike_speeds_beltlikes then
+        base_beltlike_speeds_beltlikes = {}
+        bases_beltlikes_to_speeds_beltlikes_mapping[base_name] = base_beltlike_speeds_beltlikes
       end
-    end
 
-    --- Building speeds mapping
-    local base_beltlike_speeds_beltlikes = bases_beltlikes_to_speeds_beltlikes_mapping[base_name]
-    if not base_beltlike_speeds_beltlikes then
-      base_beltlike_speeds_beltlikes = {}
-      bases_beltlikes_to_speeds_beltlikes_mapping[base_name] = base_beltlike_speeds_beltlikes
-    end
-    base_beltlike_speeds_beltlikes[speed_index] = beltlike_prototype_name
+      local base_is_section_divider = beltlike_section_dividers_names_set[base_name]
 
-    beltlikes_to_speeds_beltlikes_mapping[beltlike_prototype_name] = base_beltlike_speeds_beltlikes
+      for speed_index, reduced_speed_beltlike_name in ipairs(reduced_speed_beltlike_names) do
+        if base_is_section_divider then
+          table.insert(beltlike_section_dividers_names, reduced_speed_beltlike_name)
+          beltlike_section_dividers_names_set[reduced_speed_beltlike_name] = true
+        end
+
+        base_beltlike_speeds_beltlikes[speed_index] = reduced_speed_beltlike_name
+
+        local reduced_speed_beltlike_tier = beltlikes_tier_mapping[base_name] or DEFAULT_BELTLIKE_TIER
+        beltlikes_tier_mapping[reduced_speed_beltlike_name] = reduced_speed_beltlike_tier
+
+        local reduced_speed_beltlike_drive_resistance = beltlikes_drive_resistance_mapping[base_name] or DEFAULT_BELTLIKE_DRIVE_RESISTANCE
+        beltlikes_drive_resistance_mapping[reduced_speed_beltlike_name] = reduced_speed_beltlike_drive_resistance
+
+        beltlikes_to_speeds_beltlikes_mapping[reduced_speed_beltlike_name] = base_beltlike_speeds_beltlikes
+      end
+      table.insert(base_beltlike_speeds_beltlikes, base_name)
+
+      beltlikes_to_speeds_beltlikes_mapping[base_name] = base_beltlike_speeds_beltlikes
+    end
   end
 end
 

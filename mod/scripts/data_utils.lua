@@ -1,6 +1,8 @@
 local ModName = require("mod-name")
+local default_transport_belts_names = require("default_transport_belts_names")
 local BeltEngine = require("scripts.belt_engine")
 local Beltlike = require("scripts.beltlike")
+local Utils = require("scripts.utils")
 
 local DataUtils = {
   ---@type table<string, table<string, string>>
@@ -78,23 +80,42 @@ function DataUtils.get_prototype_order_ordering_sequences(prototype_order)
   return ordering_sequences
 end
 
-function DataUtils.extend_beltlikes()
+---@param beltlikes_drive_resistance_mapping table<string, number>
+---@param default_beltlike_drive_resistance number
+---@param beltlikes_tier_mapping table<string, string>
+---@param default_beltlike_tier string
+function DataUtils.extend_beltlikes(
+  beltlikes_drive_resistance_mapping, 
+  default_beltlike_drive_resistance, 
+  beltlikes_tier_mapping, 
+  default_beltlike_tier
+)
   for _, base_type in ipairs(Beltlike.beltlikes_types) do
     local base_type_entity_prototypes = data.raw[base_type]
-    for base_name, base_entity_prototype in pairs(base_type_entity_prototypes) do
+    for _, base_entity_prototype in pairs(base_type_entity_prototypes) do
       local extended_entity_prototype = table.deepcopy(base_entity_prototype)
-      extended_entity_prototype.custom_tooltip_fields = {
-        {
-          name = {"tooltip-field.beltlike-drive-resistance"},
-          value = tostring(Beltlike.beltlikes_drive_resistance_mapping[base_name] or Beltlike.default_beltlike_drive_resistance),
-          order = 1,
-        }
-      }
+      if not extended_entity_prototype.custom_tooltip_fields then
+        extended_entity_prototype.custom_tooltip_fields = {}
+      end
+
+      table.insert(extended_entity_prototype.custom_tooltip_fields, {
+        name = {"tooltip-field.beltlike-drive-resistance"},
+        value = tostring(beltlikes_drive_resistance_mapping[base_entity_prototype.name] or default_beltlike_drive_resistance),
+        order = 1,
+      })
+
+      table.insert(extended_entity_prototype.custom_tooltip_fields, {
+        name = {"tooltip-field.beltlike-tier"},
+        value = tostring(beltlikes_tier_mapping[base_entity_prototype.name] or default_beltlike_tier),
+        order = 2,
+      })
+
       data:extend({extended_entity_prototype})
     end
   end
 end
 
+---@param base_name string
 function DataUtils.make_section_divider_name(base_name)
   return Beltlike.belt_section_divider_prefix .. "-" .. base_name
 end
@@ -110,6 +131,8 @@ end
 ---@class CreateSectionDividerBeltProps
 ---@field base_name string
 ---@field subgroup string
+---@field skip_application_of_mod_animation_set_to_divider_belt boolean?
+---@field skip_addition_of_border_frames_to_animation_set_of_section_divider_belt boolean?
 
 ---@class CreateSectionDividerBeltsResult
 ---@field divider_belt_item data.ItemPrototype
@@ -131,23 +154,21 @@ function DataUtils.create_section_divider_belt(props)
     return nil
   end
 
-  local divider_name = DataUtils.make_section_divider_name(props.base_name)
+  local base_is_default_transport_belt = Utils.index_of(default_transport_belts_names, props.base_name) ~= nil
 
-  local animation_set_filename = "__" .. ModName .. "__/graphics/entity/" .. divider_name .. "/spritesheet.png"
-  local front_frame_icon_filename = "__" .. ModName .. "__/graphics/icons/section-divider-frame-front.png"
-  local back_frame_icon_filename = "__" .. ModName .. "__/graphics/icons/section-divider-frame-back.png"
+  local divider_name = DataUtils.make_section_divider_name(props.base_name)
 
   local icons = DataUtils.deepcopy_normalize_to_icons(base_belt_item.icons, {
     icon = base_belt_item.icon,
     icon_size = 64,
   })
   table.insert(icons, 1, {
-    icon = back_frame_icon_filename,
+    icon = "__" .. ModName .. "__/graphics/icons/section-divider-frame-back.png",
     icon_size = 64,
     floating = true,
   })
   table.insert(icons, {
-    icon = front_frame_icon_filename,
+    icon = "__" .. ModName .. "__/graphics/icons/section-divider-frame-front.png",
     icon_size = 64,
     floating = true,
   })
@@ -162,14 +183,14 @@ function DataUtils.create_section_divider_belt(props)
   divider_belt_item.localised_name = {
     "?",
     {"item-name." .. divider_name},
-    {"item-name.section-divider-default-template", {"entity-name." .. base_belt_item.name}},
-    {"entity-name." .. base_belt_item.name}
+    {"item-name.section-divider-default-template", base_belt_item.localised_name or {"entity-name." .. base_belt_item.name}},
+    divider_name,
   }
   divider_belt_item.localised_description = {
     "?",
     {"item-description." .. divider_name},
-    {"item-description.section-divider-default-template", {"entity-description." .. base_belt_item.name}},
-    {"entity-description." .. base_belt_item.name}
+    {"item-description.section-divider-default-template", base_belt_item.localised_name or {"entity-description." .. base_belt_item.name}},
+    divider_name,
   }
   divider_belt_item.icons = icons
   divider_belt_item.subgroup = props.subgroup
@@ -180,19 +201,60 @@ function DataUtils.create_section_divider_belt(props)
   divider_belt_entity_prototype.localised_name = {
     "?",
     {"entity-name." .. divider_name},
-    {"entity-name.section-divider-default-template", {"entity-name." .. base_belt_entity_prototype.name}},
-    {"entity-name." .. base_belt_entity_prototype.name}
+    {"entity-name.section-divider-default-template", base_belt_entity_prototype.localised_name or {"entity-name." .. base_belt_entity_prototype.name}},
+    divider_name,
   }
   divider_belt_entity_prototype.localised_description = {
     "?",
     {"entity-description." .. divider_name},
-    {"entity-description.section-divider-default-template", {"entity-description." .. base_belt_entity_prototype.name}},
-    {"entity-description." .. base_belt_entity_prototype.name}
+    {"entity-description.section-divider-default-template", base_belt_entity_prototype.localised_name or {"entity-description." .. base_belt_entity_prototype.name}},
+    divider_name,
   }
   divider_belt_entity_prototype.icons = icons
   divider_belt_entity_prototype.map_color = { r = 0.960, g = 0.400, b = 0.258 }
   divider_belt_entity_prototype.fast_replaceable_group = "transport-belt"
-  divider_belt_entity_prototype.belt_animation_set.animation_set.filename = animation_set_filename
+  if divider_belt_entity_prototype.belt_animation_set and divider_belt_entity_prototype.belt_animation_set.animation_set then
+    local animation_set_layers = divider_belt_entity_prototype.belt_animation_set.animation_set.layers
+
+    -- Convert plain animation set to animation set with layers
+    if not animation_set_layers or #animation_set_layers == 0 then
+      local root_animation_set_copy = table.deepcopy(divider_belt_entity_prototype.belt_animation_set.animation_set)
+      root_animation_set_copy.layers = nil
+      
+      if not props.skip_application_of_mod_animation_set_to_divider_belt and base_is_default_transport_belt then
+        root_animation_set_copy.filename = "__" .. ModName .. "__/graphics/entity/" .. divider_name .. "/spritesheet.png"
+      end
+
+      animation_set_layers = {}
+      table.insert(animation_set_layers, root_animation_set_copy)
+
+      divider_belt_entity_prototype.belt_animation_set.animation_set.layers = animation_set_layers
+    end
+
+    -- Add border frames to animation set layers
+    local animation_set_layers_first_animation = animation_set_layers[1]
+    local animation_set_layers_max_frame_count_animation = animation_set_layers[1]
+    for _, animation in ipairs(animation_set_layers) do
+      local max_frame_count = animation_set_layers_max_frame_count_animation.frame_count or 1
+      if animation.frame_count and animation.frame_count > max_frame_count then
+        animation_set_layers_max_frame_count_animation = animation
+      end
+    end
+    if not props.skip_addition_of_border_frames_to_animation_set_of_section_divider_belt then
+      local bottom_layer_border_frame_animation = table.deepcopy(animation_set_layers_max_frame_count_animation)
+      bottom_layer_border_frame_animation.filename = "__" .. ModName .. "__/graphics/entity/section-divider-transport-belt/border-frames-bottom-layer-spritesheet.png"
+      bottom_layer_border_frame_animation.repeat_count = animation_set_layers_max_frame_count_animation.frame_count or 1
+      bottom_layer_border_frame_animation.frame_count = 1
+      table.insert(animation_set_layers, 1, bottom_layer_border_frame_animation)
+    end
+    if not props.skip_addition_of_border_frames_to_animation_set_of_section_divider_belt then
+      local top_layer_border_frame_animation = table.deepcopy(animation_set_layers_max_frame_count_animation)
+      top_layer_border_frame_animation.filename = "__" .. ModName .. "__/graphics/entity/section-divider-transport-belt/border-frames-top-layer-spritesheet.png"
+      top_layer_border_frame_animation.repeat_count = animation_set_layers_max_frame_count_animation.frame_count or 1
+      top_layer_border_frame_animation.frame_count = 1
+      table.insert(animation_set_layers, top_layer_border_frame_animation)
+    end
+  end
   if divider_belt_entity_prototype.next_upgrade and divider_belt_entity_prototype.next_upgrade ~= "" then
     divider_belt_entity_prototype.next_upgrade = DataUtils.make_section_divider_name(divider_belt_entity_prototype.next_upgrade)
   end
@@ -207,13 +269,13 @@ function DataUtils.create_section_divider_belt(props)
     localised_name = {
       "?",
       {"recipe-name." .. convert_to_divider_recipe_name},
-      {"recipe-name.belt-to-section-divider-default-template", {"entity-name." .. base_belt_entity_prototype.name}},
+      {"recipe-name.belt-to-section-divider-default-template", base_belt_entity_prototype.localised_name or {"entity-name." .. base_belt_entity_prototype.name}},
       convert_to_divider_recipe_name
     },
     localised_description = {
       "?",
       {"recipe-description." .. convert_to_divider_recipe_name},
-      {"recipe-description.belt-to-section-divider-default-template", {"entity-description." .. base_belt_entity_prototype.name}},
+      {"recipe-description.belt-to-section-divider-default-template", base_belt_entity_prototype.localised_name or {"entity-description." .. base_belt_entity_prototype.name}},
       convert_to_divider_recipe_name
     },
     icons = icons,
@@ -236,13 +298,13 @@ function DataUtils.create_section_divider_belt(props)
     localised_name = {
       "?",
       {"recipe-name." .. convert_from_divider_recipe_name},
-      {"recipe-name.section-divider-to-belt-default-template", {"entity-name." .. base_belt_entity_prototype.name}},
+      {"recipe-name.section-divider-to-belt-default-template", base_belt_entity_prototype.localised_name or {"entity-name." .. base_belt_entity_prototype.name}},
       convert_from_divider_recipe_name
     },
     localised_description = {
       "?",
       {"recipe-description." .. convert_from_divider_recipe_name},
-      {"recipe-description.section-divider-to-belt-default-template", {"entity-description." .. base_belt_entity_prototype.name}},
+      {"recipe-description.section-divider-to-belt-default-template", base_belt_entity_prototype.localised_name or {"entity-description." .. base_belt_entity_prototype.name}},
       convert_from_divider_recipe_name
     },
     enabled = false,
@@ -271,6 +333,9 @@ end
 function DataUtils.create_section_divider_belts(props)
   local new_prototypes = {}
   
+  ---@type table<string, string>
+  local section_dividers_belts_names_by_bases_names = {}
+
   local base_type_entity_prototypes = data.raw["transport-belt"]
   for base_name, _ in pairs(base_type_entity_prototypes) do
     local result = DataUtils.create_section_divider_belt({
@@ -282,10 +347,14 @@ function DataUtils.create_section_divider_belts(props)
       table.insert(new_prototypes, result.divider_belt_entity)
       table.insert(new_prototypes, result.convert_to_divider_recipe)
       table.insert(new_prototypes, result.convert_from_divider_recipe)
+
+      section_dividers_belts_names_by_bases_names[base_name] = result.divider_belt_entity.name
     end
   end
 
   data:extend(new_prototypes)
+
+  return section_dividers_belts_names_by_bases_names
 end
 
 ---@param effects any[]
@@ -384,12 +453,18 @@ function DataUtils.create_reduced_speed_beltlikes()
   local beltlikes_reduced_speeds_count = Beltlike.beltlikes_reduced_speeds_count
 
   local reduced_speed_entities_prototypes = {}
+  
+  ---@type table<string, string[]>
+  local reduced_speed_beltlikes_names_by_bases_names = {}
 
   for _, base_type in ipairs(Beltlike.beltlikes_types) do
     local base_type_entity_prototypes = data.raw[base_type]
     ---@cast base_type_entity_prototypes table<string, data.TransportBeltPrototype>
     for base_name, base_entity_prototype in pairs(base_type_entity_prototypes) do
       local base_item = data.raw["item"][base_name]
+      
+      local base_reduced_speed_beltlikes_names = {}
+      reduced_speed_beltlikes_names_by_bases_names[base_name] = base_reduced_speed_beltlikes_names
 
       for i = 1, beltlikes_reduced_speeds_count do
         local reduced_speed = Beltlike.get_reduced_speed(base_entity_prototype.speed, i)
@@ -398,7 +473,7 @@ function DataUtils.create_reduced_speed_beltlikes()
         
         local reduced_speed_entity_prototype = table.deepcopy(base_entity_prototype)
         reduced_speed_entity_prototype.name = reduced_speed_entity_prototype_name
-        reduced_speed_entity_prototype.localised_name = {"entity-name." .. base_name}
+        reduced_speed_entity_prototype.localised_name = reduced_speed_entity_prototype.localised_name or {"entity-name." .. base_name}
         reduced_speed_entity_prototype.speed = reduced_speed + 0.00001
         reduced_speed_entity_prototype.hidden_in_factoriopedia = true
         reduced_speed_entity_prototype.placeable_by = { {item = base_name, count = 1} }
@@ -426,11 +501,14 @@ function DataUtils.create_reduced_speed_beltlikes()
         end
 
         table.insert(reduced_speed_entities_prototypes, reduced_speed_entity_prototype)
+        table.insert(base_reduced_speed_beltlikes_names, reduced_speed_entity_prototype_name)
       end
     end
   end
 
   data:extend(reduced_speed_entities_prototypes)
+
+  return reduced_speed_beltlikes_names_by_bases_names
 end
 
 ---@class CreateBeltEngineProps

@@ -1,0 +1,11 @@
+local DataFinalFixesStage = require("scripts.data.final_fixes_stage")
+
+local CompatibilityDataFinalFixesStageAaiIndustry = {}
+
+function CompatibilityDataFinalFixesStageAaiIndustry.apply()
+  DataFinalFixesStage.skip_default_logistic_technology_prerequisites_update = true
+  DataFinalFixesStage.skip_default_logistic_technology_research_trigger_update = true
+  DataFinalFixesStage.skip_default_logistic_technology_effects_update = true
+end
+
+return CompatibilityDataFinalFixesStageAaiIndustry

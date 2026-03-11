@@ -1,9 +1,8 @@
 local BeltEngine = require("scripts.belt_engine")
 
-local CompatibilityDataAaiIndustry = {}
+local CompatibilityDataUpdatesStageAaiIndustry = {}
 
-function CompatibilityDataAaiIndustry.apply()
-
+function CompatibilityDataUpdatesStageAaiIndustry.apply()
   local belt_engine_recipe = data.raw["recipe"][BeltEngine.belt_engines_names[1]]
   if belt_engine_recipe then
     belt_engine_recipe.ingredients = {
@@ -37,4 +36,4 @@ function CompatibilityDataAaiIndustry.apply()
   end
 end
 
-return CompatibilityDataAaiIndustry
+return CompatibilityDataUpdatesStageAaiIndustry

@@ -1,0 +1,9 @@
+local DataFinalFixesStage = require("scripts.data.final_fixes_stage")
+
+local CompatibilityDataFinalFixesStageBlackRubberBeltsRemastered = {}
+
+function CompatibilityDataFinalFixesStageBlackRubberBeltsRemastered.apply()
+    DataFinalFixesStage.skip_application_of_mod_animation_set_to_section_divider_belt = true
+end
+
+return CompatibilityDataFinalFixesStageBlackRubberBeltsRemastered

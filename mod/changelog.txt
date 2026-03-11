@@ -1,4 +1,21 @@
 ---------------------------------------------------------------------------------------------------
+Version: 1.2.0
+Date: 2026-03-11
+  Changes:
+    - Compatibility system is reworked, more mods should be compatible with the mod out of the box.
+  Features:
+    - Added auto-tiering and auto-drive resistance for beltlikes, should simplify compatibility with other mods.
+    - Auto addition of section dividers border frame graphics to base belt entities graphics from which section dividers are generated.
+  Minor Features:
+    - Added tier display to beltlikes tooltip.
+  Compatibility:
+    - Improved compatibility with AAI Industry mod.
+    - Added compatibility with Black Rubber Belts Remastered mod.
+    - Added compatibility with Planetaris mod.
+    - Added compatibility with Dredgeworks mod.
+    - With new compatibility system, now compatible with Castra mod.
+    - Added compatibility with Cargo Crates mod.
+---------------------------------------------------------------------------------------------------
 Version: 1.1.2
 Date: 2026-03-09
   Compatibility:

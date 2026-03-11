@@ -206,8 +206,11 @@ local function try_to_align_frame_to_element(frame, anchor_element, gap)
   return true
 end
 
+---@param table any[]
+---@param value any
+---@return number?
 local function index_of(table, value)
-  for i, v in pairs(table) do
+  for i, v in ipairs(table) do
     if v == value then
       return i
     end

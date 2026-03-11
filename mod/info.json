@@ -1,10 +1,21 @@
 {
   "name": "disastercore-belts",
-  "version": "1.1.2",
+  "version": "1.2.0",
   "title": "Disaster Core Belts",
   "author": "Oxion",
   "description": "Introduces belt engines which consume energy to move connected belts",
   "factorio_version": "2.0",
-  "dependencies": ["base >= 2.0.72", "? space-age >= 2.0.72", "? aai-industry >= 0.6.16"],
+  "dependencies": [
+    "base >= 2.0.72",
+    "? space-age >= 2.0.72",
+    "? aai-industry >= 0.6.16",
+    "? castra >= 0.5.4",
+    "? cargo_crates >= 0.8.2",
+    "? black-rubber-belts-remastered >= 2.3.1",
+    "? planetaris-arig >= 1.1.15",
+    "? planetaris-hyarion >=1.2.5",
+    "? planetaris-tellus >= 1.0.2",
+    "? dredgeworks >= 0.8.15"
+  ],
   "license": "Custom - see LICENSE file. Personal use & modification allowed; permission required for use in other mods/compilations; attribution required."
 }

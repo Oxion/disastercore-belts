@@ -1,0 +1,9 @@
+local beltlikes_drive_resistance_mapping = require("compatibility.mods.planetaris-arig.beltlikes_drive_resistance_mapping")
+
+local CompatibilityDataStartStagePlanetarisArig = {}
+
+function CompatibilityDataStartStagePlanetarisArig.apply()
+  DisasterCore_Belts_DataGlobals.Beltlike.extend_beltlikes_drive_resistance_mapping(beltlikes_drive_resistance_mapping)
+end
+
+return CompatibilityDataStartStagePlanetarisArig

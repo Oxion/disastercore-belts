@@ -1,5 +1,6 @@
 -- Disaster Core Belts
 
+local CompatibilityRuntimeStage = require("compatibility.compatibility_runtime_stage")
 local GameSprites = require("scripts.game.game_sprites")
 local BeltGUIManager = require("scripts.gui.belt_gui_manager")
 local BeltEngineGUIManager = require("scripts.gui.belt_engine_gui_manager")
@@ -42,11 +43,13 @@ DisasterCoreBelts.on_event("on_beltlikes_section_updated", function (event)
 end)
 
 script.on_init(function()
+  CompatibilityRuntimeStage.apply()
   Beltlike.init_control_stage()
   DisasterCoreBelts.on_init()
 end)
 
 script.on_load(function()
+  CompatibilityRuntimeStage.apply()
   Beltlike.init_control_stage()
   DisasterCoreBelts.on_load()
 end)
