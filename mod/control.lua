@@ -28,11 +28,11 @@ DisasterCoreBelts.on_event("on_beltlikes_section_updated", function (event)
   elseif event.speed_index == Beltlike.beltlikes_speeds_count then
     icon_name = GameSprites.status.working
   end
-  local icon_text = "[img=" .. icon_name .. "]"
-  local info_text = event.required_power ~= 0 and (string.format("%.0f", event.required_power) .. " | " .. string.format("%.0f", event.combined_power)) or tostring(event.section_info.effective_unit_count)
+  local icon_text = tostring(event.speed_index - 1) .. "[img=" .. icon_name .. "]"
+  local info_text = string.format("%.2f", event.required_power)
 
   player.create_local_flying_text{
-    text = icon_text .. info_text,
+    text = icon_text .. " " .. info_text,
     position = event.resolve_start_position,
     surface = event.surface,
     color = { r = 1, g = 1, b = 1, a = 1},

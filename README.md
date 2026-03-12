@@ -20,7 +20,7 @@ Factorio 2.0 mod that introduces belt engines which consume energy to move conne
 </div>
 
 - Circuit network can control working state of the **Belt engine** and with it the state of the connected **belt-like entities section**
-- Mod introduces new term **belt-like entities section** - logically continuous connected collection of the belt-like entities of the same tier which must be powered by **belt engines** to move
+- Mod introduces new term **belt-like entities section** - logically continuous connected collection of the belt-like entities (of the same tier - optionally since 1.3.0) which must be powered by **belt engines** to move
 <div align="center">
    <img src="assets/sections.webp" width="480" alt="sections">
 </div>
@@ -67,4 +67,4 @@ Useful for large factories if you want to keep belts running and add **belt engi
 
 ## Version
 
-- Mod version: 1.2.1
+- Mod version: 1.3.0

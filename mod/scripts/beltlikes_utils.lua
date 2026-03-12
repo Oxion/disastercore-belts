@@ -12,22 +12,20 @@ local beltlikes_to_speeds_beltlikes_mapping = Beltlike.beltlikes_to_speeds_beltl
 
 local BeltlikesUtils = {}
 
---- Gets the tier (evolution level) of a beltlike entity by its name.
---- Returns "basic", "fast", "express", or "turbo" depending on the beltlike type.
---- Uses dictionary lookup for O(1) performance.
+--- Gets the tier of a beltlike entity by its name.
 --- @param beltlike_name string? Name of the beltlike entity
---- @return string Tier name ("basic", "fast", "express", or "turbo"), defaults to "basic" if beltlike_name is nil or not found
+--- @return string Tier name, defaults to beltlike default tier
 function BeltlikesUtils.get_beltlike_tier(beltlike_name)
   if not beltlike_name then return default_beltlike_tier end
   return beltlikes_tier_mapping[beltlike_name] or default_beltlike_tier
 end
 
 --- Checks if a beltlike entity matches the specified tier.
---- @param beltlike_name string? Name of the beltlike entity
---- @param tier string? Tier to compare against ("basic", "fast", "express", or "turbo")
---- @return boolean True if beltlike tier matches the specified tier, false otherwise (also returns false if either parameter is nil)
+--- @param beltlike_name string Name of the beltlike entity
+--- @param tier string? Tier to compare against
+--- @return boolean True if specified tier is nil or beltlike tier matches the specified tier, false otherwise
 function BeltlikesUtils.is_same_tier_beltlike(beltlike_name, tier)
-  if not beltlike_name or not tier then return false end
+  if not tier then return true end
   return BeltlikesUtils.get_beltlike_tier(beltlike_name) == tier
 end
 
@@ -77,7 +75,7 @@ end
 --- - The beltlike has only one input (always in line), or
 --- - The neighbour's direction matches the beltlike's direction.
 --- @param beltlike_direction defines.direction Direction of the current beltlike entity
---- @param beltlike_tier string Tier of the current beltlike ("basic", "fast", "express", or "turbo")
+--- @param beltlike_tier string? Tier of the current beltlike 
 --- @param beltlike_inputs_count number Number of input neighbours the current beltlike has
 --- @param input_neighbour_entity LuaEntity? Input neighbour entity to check
 --- @return boolean True if input neighbour is in the same line, false otherwise
@@ -97,7 +95,7 @@ end
 --- For underground belts and splitters: checks if tier matches and direction matches.
 --- For transport belts: checks if tier matches, and if the belt has multiple inputs, also checks if direction matches.
 --- @param beltlike_direction defines.direction Direction of the current beltlike entity
---- @param beltlike_tier string Tier of the current beltlike ("basic", "fast", "express", or "turbo")
+--- @param beltlike_tier string? Tier of the current beltlike 
 --- @param output_neighbour_entity LuaEntity? Output neighbour entity to check
 --- @return boolean True if output neighbour is in the same line, false otherwise
 function BeltlikesUtils.is_beltlike_in_line_with_output_neighbour(beltlike_direction, beltlike_tier, output_neighbour_entity)
@@ -134,7 +132,7 @@ end
 --- Selects the first output neighbour beltlike entity that is in the same line from belt_neighbours.outputs.
 --- Iterates through all output neighbours and returns the first one that matches the line criteria.
 --- @param beltlike_direction defines.direction Direction of the current beltlike entity
---- @param beltlike_tier string Tier of the current beltlike ("basic", "fast", "express", or "turbo")
+--- @param beltlike_tier string? Tier of the current beltlike 
 --- @param belt_neighbours {outputs?: LuaEntity[]}? Belt neighbours object containing outputs array
 --- @return LuaEntity? First output neighbour in the same line, or nil if none found or belt_neighbours is invalid
 function BeltlikesUtils.select_from_neighbours_output_neighbour_in_line(beltlike_direction, beltlike_tier, belt_neighbours)
@@ -154,7 +152,7 @@ end
 --- Selects the first input neighbour beltlike entity that is in the same line from belt_neighbours.inputs.
 --- Iterates through all input neighbours and returns the first one that matches the line criteria.
 --- @param beltlike_direction defines.direction Direction of the current beltlike entity
---- @param beltlike_tier string Tier of the current beltlike ("basic", "fast", "express", or "turbo")
+--- @param beltlike_tier string? Tier of the current beltlike 
 --- @param belt_neighbours {inputs?: LuaEntity[]}? Belt neighbours object containing inputs array
 --- @return LuaEntity? First input neighbour in the same line, or nil if none found or belt_neighbours is invalid
 function BeltlikesUtils.select_from_neighbours_input_neighbour_in_line(beltlike_direction, beltlike_tier, belt_neighbours)
@@ -181,7 +179,7 @@ end
 --- Searches in the appropriate direction (forward for input, backward for output) for an underground belt of the same tier.
 --- Excludes the other_side position from the search area to avoid finding the same entity.
 --- @param belt LuaEntity Underground belt entity to find a pair for
---- @param belt_tier string Tier of the belt ("basic", "fast", "express", or "turbo")
+--- @param belt_tier string Tier of the belt
 --- @param other_side LuaEntity? Optional entity to exclude from search (typically the removed entity)
 --- @return LuaEntity? Found underground belt pair, or nil if none found or belt is invalid
 function BeltlikesUtils.find_potential_underground_belt_pair(belt, belt_tier, other_side)
@@ -399,7 +397,7 @@ end
 --- For line_number 2: selects neighbour on the right side (cross_product < 0) or in line (cross_product == 0).
 --- @param splitter_position MapPosition Position of the splitter entity
 --- @param splitter_direction defines.direction Direction of the splitter entity
---- @param splitter_tier string Tier of the splitter ("basic", "fast", "express", or "turbo")
+--- @param splitter_tier string Tier of the splitter
 --- @param belt_neighbours {outputs?: LuaEntity[]}? Belt neighbours object containing outputs array
 --- @param line_number number Line number (1 or 2) to select the appropriate output neighbour
 --- @return LuaEntity? Output neighbour in the same line matching the line_number, or nil if none found or belt_neighbours is invalid
@@ -439,7 +437,7 @@ end
 --- For line_number 2: selects neighbour on the left side (cross_product > 0) or in line (cross_product == 0).
 --- @param splitter_position MapPosition Position of the splitter entity
 --- @param splitter_direction defines.direction Direction of the splitter entity
---- @param splitter_tier string Tier of the splitter ("basic", "fast", "express", or "turbo")
+--- @param splitter_tier string Tier of the splitter
 --- @param belt_neighbours {inputs?: LuaEntity[]}? Belt neighbours object containing inputs array
 --- @param line_number number Line number (1 or 2) to select the appropriate input neighbour
 --- @return LuaEntity? Input neighbour in the same line matching the line_number, or nil if none found or belt_neighbours is invalid

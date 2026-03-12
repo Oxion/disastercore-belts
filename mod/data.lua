@@ -82,7 +82,7 @@ DataUtils.create_belt_engine{
   recipe_category = "crafting",
   recipe_ingredients = {
     {type = "item", name = "belt-engine", amount = 1},
-    {type = "item", name = "advanced-circuit", amount = 2},
+    {type = "item", name = "electronic-circuit", amount = 6},
     {type = "item", name = "steel-plate", amount = 2}
   },
   enabled = false

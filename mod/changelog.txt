@@ -1,4 +1,14 @@
 ---------------------------------------------------------------------------------------------------
+Version: 1.3.0
+Date: 2026-03-12
+  Changes:
+    - Beltlikes sections no longer require all beltlikes to be of the same tier, as this did not provide tangible gameplay benefits and made belt upgrades needlessly awkward. (Old behavior can be enabled using the setting "Beltlikes section: Same tier only" in mod startup settings.)
+  Minor Features:
+    - Changed the beltlike entity section status display to show [speed_index] [status_icon] [required_power] text.
+  Balancing:
+    - Changed brushless-belt-engine recipe to require 6 electronic-circuit instead of 4 advanced-circuit.
+
+---------------------------------------------------------------------------------------------------
 Version: 1.2.1
 Date: 2026-03-11
   Bugfixes:
