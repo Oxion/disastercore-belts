@@ -2306,18 +2306,6 @@ function DisasterCoreBelts_API.on_player_deconstructed_area(event)
   local search_area_top_left_y = math.floor(area.left_top.y) - 0.2
   local search_area_bottom_right_x = math.ceil(area.right_bottom.x) + 0.2
   local search_area_bottom_right_y = math.ceil(area.right_bottom.y) + 0.2
-  rendering.draw_rectangle{
-    color = {r = 1, g = 0, b = 0, a = 0.5},
-    surface = event.surface,
-    left_top = {
-      x = search_area_top_left_x,
-      y = search_area_top_left_y,
-    },
-    right_bottom = {
-      x = search_area_bottom_right_x,
-      y = search_area_bottom_right_y,
-    },
-  }
 
   local min_outside_x = search_area_top_left_x
   local min_outside_y = search_area_top_left_y
@@ -2456,13 +2444,6 @@ function DisasterCoreBelts_API.on_player_deconstructed_area(event)
   end
 
   for _, outside_area in ipairs(outside_areas) do
-    rendering.draw_rectangle{
-      color = {r = 0, g = 0, b = 1, a = 0.5},
-      surface = event.surface,
-      left_top = outside_area.left_top,
-      right_bottom = outside_area.right_bottom,
-    }
-
     local outside_underground_belts = event.surface.find_entities_filtered{
       type = "underground-belt",
       area = outside_area,

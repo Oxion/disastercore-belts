@@ -67,4 +67,4 @@ Useful for large factories if you want to keep belts running and add **belt engi
 
 ## Version
 
-- Mod version: 1.3.0
+- Mod version: 1.3.1
