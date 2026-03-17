@@ -39,6 +39,11 @@ Factorio 2.0 mod that introduces belt engines which consume energy to move conne
 
 - Minor change in the starting technology tree: the logistics node now opens access to the first **Belt engine** (which depends on steam power and electronics), and the research unlock trigger was changed to crafting 10 transport belts
 
+- [Version 1.4.0] New tool **Beltlikes sections overlay** provides info about hovered **belt-like entities section**
+<div align="center">
+   <img src="assets/beltlikes-sections-overlay-tool.png" width="480" alt="beltlikes-sections-overlay-tool">
+</div>
+
 ## Mod integration into existing save
 
 **Important** Back up your save before loading it with this mod.
@@ -67,4 +72,4 @@ Useful for large factories if you want to keep belts running and add **belt engi
 
 ## Version
 
-- Mod version: 1.3.1
+- Mod version: 1.4.0

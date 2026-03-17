@@ -6,6 +6,7 @@ local BeltGUIManager = require("scripts.gui.belt_gui_manager")
 local BeltEngineGUIManager = require("scripts.gui.belt_engine_gui_manager")
 local Beltlike = require("scripts.beltlike")
 local DisasterCoreBelts = require("scripts.disaster_core_belts")
+local BeltlikesSectionsOverlaysManager = require("scripts.beltlikes_sections_overlays_manager")
 
 DisasterCoreBelts.on_event("on_beltlikes_section_updated", function (event)
   if not event.surface.valid then
@@ -70,6 +71,7 @@ end)
 
 script.on_event(defines.events.on_built_entity, function(event)
   DisasterCoreBelts.on_built_entity(event)
+  BeltlikesSectionsOverlaysManager.on_built_entity(event)
 end)
 
 script.on_event(defines.events.on_robot_built_entity, function(event)
@@ -78,6 +80,7 @@ end)
 
 script.on_event(defines.events.on_player_mined_entity, function(event)
   DisasterCoreBelts.on_player_mined_entity(event)
+  BeltlikesSectionsOverlaysManager.on_player_mined_entity(event)
 end)
 
 script.on_event(defines.events.on_robot_mined_entity, function(event)
@@ -108,6 +111,10 @@ script.on_event(defines.events.on_entity_died, function(event)
   DisasterCoreBelts.on_entity_died(event)
 end)
 
+script.on_event(defines.events.on_selected_entity_changed, function(event)
+  BeltlikesSectionsOverlaysManager.on_selected_entity_changed(event)
+end)
+
 script.on_event(defines.events.on_player_display_resolution_changed, function(event)
   BeltEngineGUIManager.on_player_display_resolution_changed(event)
 end)
@@ -118,6 +125,14 @@ end)
 
 script.on_event(defines.events.on_player_display_density_scale_changed, function(event)
   BeltEngineGUIManager.on_player_display_density_scale_changed(event)
+end)
+
+script.on_event(defines.events.on_string_translated, function(event)
+  BeltlikesSectionsOverlaysManager.on_string_translated(event)
+end)
+
+script.on_event(defines.events.on_lua_shortcut, function(event)
+  BeltlikesSectionsOverlaysManager.on_lua_shortcut(event)
 end)
 
 script.on_event(defines.events.on_gui_opened, function(event)

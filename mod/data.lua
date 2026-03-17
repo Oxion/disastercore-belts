@@ -5,6 +5,7 @@ local ModName = require("mod-name")
 local CompatibilityDataStartStage = require("compatibility.compatibility_data_start_stage")
 local DataUtils = require("scripts.data_utils")
 local BeltEngine = require("scripts.belt_engine")
+local Shortcuts = require("scripts.shortcuts")
 
 --------------------------------
 -- Compatibility data start stage
@@ -20,6 +21,27 @@ data:extend({
   {
     name = ModName,
     type = 'mod-data',
+  }
+})
+
+------------------------------------------------------------
+--- Shortcuts
+------------------------------------------------------------
+
+data:extend({
+  {
+    type = "shortcut",
+    action = "lua",
+    name = Shortcuts.toggle_beltlikes_sections_overlay_tool,
+    icon = "__" .. ModName .. "__/graphics/icons/beltlikes-sections-overlay-tool.png",
+    icon_size = 512,
+    localised_name = {
+      "shortcut." .. Shortcuts.toggle_beltlikes_sections_overlay_tool
+    },
+    order = "b[tools]-d[toggle-beltlikes-sections-overlay-tool]",
+    small_icon = "__" .. ModName .. "__/graphics/icons/beltlikes-sections-overlay-tool.png",
+    small_icon_size = 512,
+    toggleable = true,
   }
 })
 

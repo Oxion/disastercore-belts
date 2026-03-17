@@ -89,16 +89,37 @@ function Beltlike.get_reduced_speed(base_speed, speed_index)
   end
 end
 
----@param power_ratio number
+---@param required_power number
+---@param combined_power number
 ---@return number speed_index
 ---@return number step_power_ratio
-function Beltlike.get_power_ratio_speed_index(power_ratio)
+function Beltlike.get_power_ratio_speed_index(required_power, combined_power)
+  if combined_power <= 0 then
+    return 1, 0
+  end
+  
+  local power_ratio = required_power / combined_power
   for speed_index, step_power_ratio in ipairs(beltlikes_speed_reductions_steps_power_ratios) do
     if power_ratio > step_power_ratio then
       return speed_index, step_power_ratio
     end
   end
   return beltlikes_speeds_count, 0
+end
+
+---@param speed_index number
+---@param step_power_ratio number
+---@param combined_power number
+---@return LocalisedString
+function Beltlike.get_power_range_label(speed_index, step_power_ratio, combined_power)
+  local power_ratio_range_start_value_label = "0"
+  local power_ratio_range_end_value_label = "∞"
+  if combined_power > 0 then
+    power_ratio_range_start_value_label = string.format("%.2f", combined_power * step_power_ratio)
+    power_ratio_range_end_value_label = speed_index > 1 and string.format("%.2f", combined_power * beltlikes_speed_reductions_steps_power_ratios[speed_index - 1]) or "∞"
+  end
+
+  return {"beltlike.power-range", tostring(speed_index), power_ratio_range_start_value_label, power_ratio_range_end_value_label}
 end
 
 ---@param beltlike_prototype_name string

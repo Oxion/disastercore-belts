@@ -457,6 +457,7 @@ end
 ---@field belts LuaEntity[] Array of all belts in the section
 ---@field beltlikes_unit_numbers_set table<number, boolean> Set of all beltlikes unit numbers in the section
 ---@field engines BeltEngineCacheRecord[] Array of all engines connected to the section
+---@field branches_pointers table<number, { start_index: number, end_index: number }> Array of all branches pointers
 
 --- Resolves a beltlike section starting from a given beltlike and returns information about all connected belts and engines.
 --- When encountering splitters, collects ALL branching paths (all inputs and outputs) into one belt segment.
@@ -473,13 +474,16 @@ function DisasterCoreBelts.resolve_beltlike_section(
   backward_jumps,
   forward_jumps
 )
-  if not start_beltlike or not start_beltlike.valid then
-    return {belt_count = 0, effective_unit_count = 0, belts = {}, engines = {}}
-  end
-  
-  -- Check if it's a beltlike entity
-  if not beltlikes_types_set[start_beltlike.type] then
-    return {belt_count = 0, effective_unit_count = 0, belts = {}, engines = {}}
+  if not start_beltlike or not start_beltlike.valid or not beltlikes_types_set[start_beltlike.type] then
+    return {
+      belt_count = 0, 
+      effective_unit_count = 0,
+      required_power = 0,
+      belts = {},
+      beltlikes_unit_numbers_set = {},
+      engines = {},
+      branches_pointers = {},
+    }
   end
   
   -- Get start beltlike tier
@@ -492,6 +496,7 @@ function DisasterCoreBelts.resolve_beltlike_section(
   local traversed_beltlikes = {}
   local traversed_beltlikes_count = 0
   local engines_list = {}
+  local branches_pointers = {}
   local effective_unit_count = 0  -- Counts resistance units: underground belts use distance, splitters count as 2 each
   local beltlike_section_required_power = 0
   
@@ -602,6 +607,8 @@ function DisasterCoreBelts.resolve_beltlike_section(
     if not current_beltlike or not current_beltlike.valid then
       goto continue_branch
     end
+
+    local branch_start_beltlike_index = traversed_beltlikes_count + 1
     
     -- Add initial beltlike
     -- Note: initial beltlike can be already traversed, so this may return false, but that's OK - we still need to traverse from it
@@ -680,9 +687,10 @@ function DisasterCoreBelts.resolve_beltlike_section(
               end
             end
           end
-          -- Stop this branch at splitter
-          break
         end
+
+        -- Stop this branch at splitter
+        break
       end
       
       -- Check jumps if no next belt found
@@ -707,7 +715,7 @@ function DisasterCoreBelts.resolve_beltlike_section(
       end
       
       if not next_beltlike or not next_beltlike.valid then
-        -- No next belt found, end of line
+        -- No next belt found, end this branch
         break
       end
       
@@ -723,45 +731,20 @@ function DisasterCoreBelts.resolve_beltlike_section(
         break
       end
 
-      -- Determine if next belt is a splitter and if we came through its input or output
-      local came_from_input_next = nil
-      if next_beltlike.type == "splitter" then
-        -- Check if current_belt is in splitter's inputs or outputs
-        local splitter_neighbours = next_beltlike.belt_neighbours
-        if splitter_neighbours then
-          -- Check if current_belt is in splitter's inputs
-          if splitter_neighbours.inputs then
-            for _, input in ipairs(splitter_neighbours.inputs) do
-              if input and input.valid and input.unit_number == current_beltlike.unit_number then
-                came_from_input_next = true  -- We came through splitter's input
-                break
-              end
-            end
-          end
-          -- Check if current_belt is in splitter's outputs
-          if came_from_input_next == nil and splitter_neighbours.outputs then
-            for _, output in ipairs(splitter_neighbours.outputs) do
-              if output and output.valid and output.unit_number == current_beltlike.unit_number then
-                came_from_input_next = false  -- We came through splitter's output
-                break
-              end
-            end
-          end
-        end
-      end
       
       -- Add next belt and continue traversal
       local was_added = add_beltlike_entity(next_beltlike, next_belt_additional_effective_units)
       if not was_added then
-        -- Belt already visited and it's not a splitter, end this branch
+        -- Belt already visited, end this branch
         break
       end
       
       -- Update for next iteration
       current_beltlike = next_beltlike
-      came_from_input = came_from_input_next
       came_from_beltlike_unit_number = current_beltlike.unit_number
     end
+
+    table.insert(branches_pointers, { branch_start_beltlike_index, traversed_beltlikes_count })
     
     ::continue_branch::
   end
@@ -772,7 +755,8 @@ function DisasterCoreBelts.resolve_beltlike_section(
     required_power = beltlike_section_required_power,
     belts = traversed_beltlikes,
     beltlikes_unit_numbers_set = visited_unit_numbers,
-    engines = engines_list
+    engines = engines_list,
+    branches_pointers = branches_pointers
   }
 
   if DisasterCoreBelts.events_handlers.on_beltlike_section_resolved ~= nil then
@@ -785,8 +769,44 @@ function DisasterCoreBelts.resolve_beltlike_section(
   return section_info
 end
 
+---@class BeltlikesSectionPowerState
+---@field engines BeltEngineCacheRecord[] Array of best three engine cache records
+---@field combined_engine_power number Combined engine power
+
+--- Selects the best three engines from the engines cache records.
+--- @param section_info BeltSectionInfo Section information
+--- @return BeltlikesSectionPowerState power_state
+function DisasterCoreBelts.resolve_beltlikes_section_power_state(section_info)
+  ---@type BeltEngineCacheRecord[]
+  local best_active_engines_cache_records = {}
+  for _, engine_cache_record in ipairs(section_info.engines) do
+    if engine_cache_record.working and engine_cache_record.engine.valid then
+      table.insert(best_active_engines_cache_records, engine_cache_record)
+    end
+  end
+
+  table.sort(best_active_engines_cache_records, function(a, b)
+    local a_power = belt_engines_power_mapping[a.engine.name] or default_engine_power
+    local b_power = belt_engines_power_mapping[b.engine.name] or default_engine_power
+    return a_power > b_power
+  end)
+
+  local first_best_name = best_active_engines_cache_records[1] and best_active_engines_cache_records[1].engine.name or nil
+  local second_best_name = best_active_engines_cache_records[2] and best_active_engines_cache_records[2].engine.name or nil
+  local third_best_name = best_active_engines_cache_records[3] and best_active_engines_cache_records[3].engine.name or nil
+
+  local combined_engine_power = (belt_engines_power_mapping[first_best_name] or 0)
+    + ((belt_engines_power_mapping[second_best_name] or 0) / 2)
+    + ((belt_engines_power_mapping[third_best_name] or 0) / 4)
+  
+  return {
+    engines = best_active_engines_cache_records,
+    combined_engine_power = combined_engine_power
+  }
+end
+
 --- Calculates combined engine power from engines array using formula: first + second/2 + third/4
---- @param engines_cache_records BeltEngineCacheRecord[] Array of engine entities
+--- @param engines_cache_records BeltEngineCacheRecord[] Array of engine cache records
 --- @return number Combined engine power (0 if no valid engines)
 function DisasterCoreBelts.calc_beltlikes_section_combined_engine_power(engines_cache_records)
   if not engines_cache_records or #engines_cache_records == 0 then
@@ -840,10 +860,10 @@ function DisasterCoreBelts.can_beltlikes_section_be_active(section_info)
   local required_power = section_info.required_power
   
   -- Calculate combined engine power
-  local combined_power = DisasterCoreBelts.calc_beltlikes_section_combined_engine_power(section_info.engines)
+  local power_state = DisasterCoreBelts.resolve_beltlikes_section_power_state(section_info)
   
   -- Section can be active if combined power >= required power
-  local can_be_active = combined_power >= required_power
+  local can_be_active = power_state.combined_engine_power >= required_power
   
   -- game.print("[can_beltlikes_section_be_active]: " .. tostring(can_be_active) .. 
   --            " | Beltlikes: " .. section_info.belt_count .. 
@@ -853,7 +873,7 @@ function DisasterCoreBelts.can_beltlikes_section_be_active(section_info)
   --            " | Combined power: " .. string.format("%.2f", combined_power) .. 
   --            " | Engines: " .. #section_info.engines)
   
-  return can_be_active, required_power, combined_power
+  return can_be_active, required_power, power_state.combined_engine_power
 end
 
 --- Updates the beltlikes in a section based on the required power and combined power.
@@ -862,18 +882,8 @@ end
 --- @param combined_power number Combined engine power
 --- @return number speed_index Speed index
 function DisasterCoreBelts.update_beltlikes_in_section(section_info, required_power, combined_power)
-  local speed_index = 1
-  local power_ratio_range_start_value_label = "0"
-  local power_ratio_range_end_value_label = "∞"
-  if combined_power > 0 then
-    local power_ratio_speed_index, step_power_ratio = Beltlike.get_power_ratio_speed_index(required_power / combined_power)
-    
-    speed_index = power_ratio_speed_index
-    power_ratio_range_start_value_label = string.format("%.2f", combined_power * step_power_ratio)
-    power_ratio_range_end_value_label = power_ratio_speed_index > 1 and string.format("%.2f", combined_power * Beltlike.beltlikes_speed_reductions_steps_power_ratios[power_ratio_speed_index - 1]) or "∞"
-  end
-
-  local power_ratio_range_label = {"beltlike.power-range", tostring(speed_index), power_ratio_range_start_value_label, power_ratio_range_end_value_label}
+  local speed_index, step_power_ratio = Beltlike.get_power_ratio_speed_index(required_power, combined_power)
+  local power_ratio_range_label = Beltlike.get_power_range_label(speed_index, step_power_ratio, combined_power)
   local speed_custom_status = { diode = defines.entity_status_diode.yellow, label = "" }
   if speed_index == 1 then
     speed_custom_status = { diode = defines.entity_status_diode.red, label = {"", {"beltlike.status.stopped"}, " ", power_ratio_range_label } }
@@ -2110,6 +2120,20 @@ local DisasterCoreBelts_API = {}
 ---@overload fun(event:("on_beltlikes_section_resolved"), handler:fun(event:{ start_beltlike: LuaEntity, section_info: BeltSectionInfo }))
 function DisasterCoreBelts_API.on_event(event, handler)
   DisasterCoreBelts.events_handlers[event] = handler
+end
+
+--- Resolves a beltlike section.
+--- @param beltlike LuaEntity Beltlike entity (transport-belt, underground-belt, or splitter)
+--- @return BeltSectionInfo Section information
+function DisasterCoreBelts_API.resolve_beltlikes_section(beltlike)
+  return DisasterCoreBelts.resolve_beltlike_section(beltlike)
+end
+
+--- Resolves the power state of a beltlike section.
+--- @param section_info BeltSectionInfo Section information
+--- @return BeltlikesSectionPowerState power_state
+function DisasterCoreBelts_API.resolve_beltlikes_section_power_state(section_info)
+  return DisasterCoreBelts.resolve_beltlikes_section_power_state(section_info)
 end
 
 ------------------------------------------------------------
